@@ -1,3 +1,5 @@
+#include <exception>
+
 #include "nrx/core/application.hpp"
 #include "nrx/utils/logger.hpp"
 

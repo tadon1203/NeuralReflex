@@ -1,11 +1,11 @@
+#include "core/platform.hpp"
+
 #include <expected>
 #include <format>
 #include <string>
 
 #include <objbase.h>
 #include <winrt/base.h>
-
-#include "core/platform.hpp"
 
 namespace nrx::core {
 

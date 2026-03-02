@@ -70,7 +70,7 @@ namespace {
 
 struct MonitorInfo {
     HMONITOR handle{nullptr};
-    bool isPrimary{false};
+    bool primary{false};
 };
 
 auto CALLBACK enumMonitorsProc(HMONITOR monitor, HDC deviceContext, LPRECT clippingRect,
@@ -91,7 +91,7 @@ auto CALLBACK enumMonitorsProc(HMONITOR monitor, HDC deviceContext, LPRECT clipp
     }
 
     monitors->push_back(MonitorInfo{
-        .handle = monitor, .isPrimary = (monitorInfo.dwFlags & MONITORINFOF_PRIMARY) != 0});
+        .handle = monitor, .primary = (monitorInfo.dwFlags & MONITORINFOF_PRIMARY) != 0});
     return TRUE;
 }
 
@@ -166,7 +166,7 @@ class ScreenCapturer::Impl {
 
         const auto& monitors = monitorsResult.value();
         const auto primaryIt =
-            std::ranges::find_if(monitors, [](const MonitorInfo& info) { return info.isPrimary; });
+            std::ranges::find_if(monitors, [](const MonitorInfo& info) { return info.primary; });
         if (primaryIt == monitors.end()) {
             return std::unexpected(CaptureError::NoPrimaryMonitor);
         }

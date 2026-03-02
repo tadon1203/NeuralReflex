@@ -25,7 +25,7 @@ int Application::run() {
         return -1;
     }
 
-    isRunning.store(true);
+    running.store(true);
     dxContext = std::make_unique<nrx::gfx::DxContext>();
     if (const auto result = dxContext->init(); !result) {
         NRX_CRITICAL("Failed to initialize DxContext: {}",
@@ -60,7 +60,7 @@ int Application::run() {
 }
 
 void Application::shutdown() {
-    isRunning.store(false);
+    running.store(false);
 
     if (inferenceThread.joinable()) {
         inferenceThread.request_stop();
@@ -85,7 +85,7 @@ void Application::inferenceLoop(const std::stop_token& stopToken) {
     int emptyFrameStreak = 0;
 
     while (!stopToken.stop_requested()) {
-        if (dxContext->isDeviceLost()) {
+        if (dxContext->checkDeviceLost()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
@@ -116,13 +116,13 @@ void Application::inferenceLoop(const std::stop_token& stopToken) {
 void Application::overlayLoop() {
     NRX_INFO("Overlay thread started.");
 
-    while (isRunning.load()) {
-        if (dxContext != nullptr && dxContext->isDeviceLost()) {
+    while (running.load()) {
+        if (dxContext != nullptr && dxContext->checkDeviceLost()) {
             NRX_WARN("Overlay detected device lost. Reinitializing DxContext...");
             if (const auto result = dxContext->handleDeviceLost(); !result) {
                 NRX_CRITICAL("Failed to recover from device lost: {}",
                              nrx::gfx::dxContextErrorToString(result.error()));
-                isRunning.store(false);
+                running.store(false);
                 break;
             }
 
@@ -137,7 +137,7 @@ void Application::overlayLoop() {
 void Application::reinitializeEnginesAfterDeviceReset() {
     if (screenCapturer == nullptr) {
         NRX_CRITICAL("ScreenCapturer is unavailable during device reset recovery.");
-        isRunning.store(false);
+        running.store(false);
         return;
     }
 
@@ -148,14 +148,14 @@ void Application::reinitializeEnginesAfterDeviceReset() {
     if (const auto result = screenCapturer->init(); !result) {
         NRX_CRITICAL("Failed to reinitialize ScreenCapturer: {}",
                      nrx::gfx::captureErrorToString(result.error()));
-        isRunning.store(false);
+        running.store(false);
         return;
     }
 
     if (const auto result = screenCapturer->start(); !result) {
         NRX_CRITICAL("Failed to restart ScreenCapturer: {}",
                      nrx::gfx::captureErrorToString(result.error()));
-        isRunning.store(false);
+        running.store(false);
         return;
     }
 

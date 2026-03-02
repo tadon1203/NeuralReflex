@@ -37,7 +37,7 @@ IncludeCategories:
     Priority: 5
     SortPriority: 0
     CaseSensitive: false
-IncludeIsMainRegex: "([-_](test|unittest))?$"
+IncludeIsMainRegex: "([-_](test|unittest|win|linux|mac))?$"
 IncludeIsMainSourceRegex: ""
 
 PointerAlignment: Left

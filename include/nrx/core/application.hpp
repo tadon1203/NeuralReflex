@@ -30,7 +30,7 @@ class Application {
     void overlayLoop();
     void reinitializeEnginesAfterDeviceReset();
 
-    std::atomic_bool isRunning{false};
+    std::atomic_bool running{false};
     std::unique_ptr<nrx::gfx::DxContext> dxContext;
     std::unique_ptr<nrx::gfx::ScreenCapturer> screenCapturer;
     std::jthread inferenceThread;

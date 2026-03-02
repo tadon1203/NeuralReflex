@@ -66,7 +66,7 @@ class DxContext {
     auto signalSharedFence() -> std::expected<void, DxContextError>;
     auto signalSharedFenceFromD11() -> std::expected<void, DxContextError>;
     auto waitSharedFenceFromD11(uint64_t targetValue) -> std::expected<void, DxContextError>;
-    [[nodiscard]] auto isDeviceLost() const -> bool;
+    [[nodiscard]] auto checkDeviceLost() const -> bool;
     void notifyDeviceLost();
 
   private:

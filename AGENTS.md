@@ -32,7 +32,34 @@ Use CMake presets for reproducible local builds.
 - Linting/static checks: follow `.clang-tidy` guidance when running analysis locally.
 - Indentation: 4 spaces, no tabs.
 - Naming: follow the naming rules configured in `.clang-tidy` for symbols (types, functions, variables).
+- Function naming: use descriptive verb phrases in `lowerCamelCase`; prefer imperative or direct action-oriented forms.
+- Variable naming: use `camelBack` and noun-based names.
+- Boolean naming exception: state-word booleans are allowed.
+- Prefix guidance: when context is already clear, avoid `is`/`has` prefixes for booleans.
+- Small-scope exception: short counter/iterator names (for example `i`, `j`) are permitted.
 - File naming: use `snake_case` for source and header files (for example `dx_context.cpp`, `dx_context.hpp`).
+- Include block order and grouping:
+  1. Related header (the matching header for the current source file, e.g. `foo.cc` -> `foo.h`)
+  2. C system headers (e.g. `<stdint.h>`, `<stdlib.h>`)
+  3. C++ standard library headers (e.g. `<vector>`, `<string>`, `<expected>`)
+  4. Third-party and OS headers (e.g. `<spdlog/spdlog.h>`, `<gtest/gtest.h>`, `<Windows.h>`, `<unistd.h>`)
+  5. Project headers
+- Insert exactly one blank line between include groups.
+- Use `<...>` for:
+  - C standard library headers
+  - C++ standard library headers
+  - Third-party library headers
+  - OS/platform headers
+- Use `"..."` for all project headers in this repository.
+- Project header path rules:
+  - Public headers: include paths must be written from the `include/` root.
+  - Private headers: include paths must be written from the `src/` root.
+- Public header platform-independence:
+  - Public headers under `include/` MUST remain platform-independent.
+  - Do not include platform/OS headers in public headers (e.g. `<Windows.h>`, `<SetupAPI.h>`, `<unistd.h>`).
+  - Do not expose platform-specific types/macros/constants in public API signatures.
+  - Exception: platform-specific types are allowed in public API signatures only when they are forward-declared (no platform/OS header includes in the public header).
+  - Keep platform-specific includes and concrete implementations in `src/` private headers/sources behind abstract interfaces.
 
 ## Testing Guidelines
 There is currently no dedicated automated test target in this repository.

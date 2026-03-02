@@ -1,7 +1,7 @@
 #include "nrx/gfx/dx_context.hpp"
 
+#include <array>
 #include <atomic>
-#include <iterator>
 
 #include <Windows.h>
 #include <d3d11.h>
@@ -109,7 +109,7 @@ class DxContext::Impl {
             return result;
         }
 
-        deviceLost.store(false);
+        deviceLostFlag.store(false);
         NRX_INFO("DxContext initialized successfully.");
         return {};
     }
@@ -122,7 +122,7 @@ class DxContext::Impl {
             return result;
         }
 
-        deviceLost.store(false);
+        deviceLostFlag.store(false);
         return {};
     }
 
@@ -182,9 +182,9 @@ class DxContext::Impl {
         return {};
     }
 
-    [[nodiscard]] auto isDeviceLost() const -> bool { return deviceLost.load(); }
+    [[nodiscard]] auto checkDeviceLost() const -> bool { return deviceLostFlag.load(); }
 
-    void notifyDeviceLost() { deviceLost.store(true); }
+    void notifyDeviceLost() { deviceLostFlag.store(true); }
 
   private:
     auto createFactory() -> std::expected<void, DxContextError> {
@@ -295,7 +295,7 @@ class DxContext::Impl {
         creationFlags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
 
-        constexpr D3D_FEATURE_LEVEL featureLevels[] = {
+        constexpr std::array<D3D_FEATURE_LEVEL, 2> featureLevels = {
             D3D_FEATURE_LEVEL_11_1,
             D3D_FEATURE_LEVEL_11_0,
         };
@@ -305,8 +305,8 @@ class DxContext::Impl {
         D3D_FEATURE_LEVEL createdFeatureLevel = D3D_FEATURE_LEVEL_11_0;
 
         const HRESULT hr = D3D11CreateDevice(
-            adapter.get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, creationFlags, featureLevels,
-            static_cast<UINT>(std::size(featureLevels)), D3D11_SDK_VERSION, baseDevice.put(),
+            adapter.get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, creationFlags, featureLevels.data(),
+            static_cast<UINT>(featureLevels.size()), D3D11_SDK_VERSION, baseDevice.put(),
             &createdFeatureLevel, baseContext.put());
 
         NRX_DX_CHECK(hr, "Failed to create D3D11 device", DxContextError::CreateD11DeviceFailed);
@@ -385,7 +385,7 @@ class DxContext::Impl {
     winrt::com_ptr<ID3D12Fence> sharedFence;
     HANDLE sharedFenceHandle{nullptr};
     uint64_t fenceValue{0};
-    std::atomic_bool deviceLost{false};
+    std::atomic_bool deviceLostFlag{false};
 };
 
 DxContext::DxContext() : impl(std::make_unique<Impl>()) {}
@@ -429,7 +429,7 @@ auto DxContext::waitSharedFenceFromD11(uint64_t targetValue)
     return impl->waitSharedFenceFromD11(targetValue);
 }
 
-auto DxContext::isDeviceLost() const -> bool { return impl->isDeviceLost(); }
+auto DxContext::checkDeviceLost() const -> bool { return impl->checkDeviceLost(); }
 
 void DxContext::notifyDeviceLost() { impl->notifyDeviceLost(); }
 
