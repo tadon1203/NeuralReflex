@@ -1,5 +1,9 @@
 # Repository Guidelines
 
+## Language Policy
+- Assistant responses to the user MUST be written in Japanese.
+- Everything else MUST be written in English (including code, comments, identifiers, command examples, commit messages, PR text, and documentation updates unless explicitly requested otherwise).
+
 ## Project Structure & Module Organization
 NeuralReflex is a C++23 application built with CMake and Ninja.
 
