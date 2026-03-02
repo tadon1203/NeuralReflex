@@ -19,9 +19,11 @@ add_compile_definitions(WIN32_LEAN_AND_MEAN NOMINMAX)
 add_executable(${PROJECT_NAME}
     src/main.cpp
     src/core/application.cpp
+    src/core/platform_win.cpp
     src/utils/logger.cpp
     src/utils/dx_helper.cpp
     src/gfx/dx_context.cpp
+    src/gfx/screen_capturer.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE 

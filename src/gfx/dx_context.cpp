@@ -46,19 +46,19 @@ class DxContext::Impl {
     auto init() -> std::expected<void, std::string> {
         releaseResources();
 
-        if (const auto result = createFactory(); !result.has_value()) {
+        if (const auto result = createFactory(); !result) {
             return result;
         }
-        if (const auto result = createD12Device(); !result.has_value()) {
+        if (const auto result = createD12Device(); !result) {
             return result;
         }
-        if (const auto result = createD12Queue(); !result.has_value()) {
+        if (const auto result = createD12Queue(); !result) {
             return result;
         }
-        if (const auto result = createD11Device(); !result.has_value()) {
+        if (const auto result = createD11Device(); !result) {
             return result;
         }
-        if (const auto result = createSharedFence(); !result.has_value()) {
+        if (const auto result = createSharedFence(); !result) {
             return result;
         }
 
@@ -71,7 +71,7 @@ class DxContext::Impl {
         NRX_WARN("Device lost detected. Recreating DX11/DX12 resources.");
 
         releaseResources();
-        if (const auto result = init(); !result.has_value()) {
+        if (const auto result = init(); !result) {
             return result;
         }
 
@@ -190,7 +190,7 @@ class DxContext::Impl {
         enableD3D12DebugLayer();
 
         const auto adapterResult = findHardwareAdapter();
-        if (!adapterResult.has_value()) {
+        if (!adapterResult) {
             return std::unexpected(adapterResult.error());
         }
 
@@ -231,7 +231,7 @@ class DxContext::Impl {
         }
 
         const auto adapterResult = findHardwareAdapter();
-        if (!adapterResult.has_value()) {
+        if (!adapterResult) {
             return std::unexpected(adapterResult.error());
         }
 

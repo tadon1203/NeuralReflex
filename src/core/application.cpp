@@ -3,7 +3,9 @@
 #include <memory>
 #include <thread>
 
+#include "core/platform.hpp"
 #include "nrx/gfx/dx_context.hpp"
+#include "nrx/gfx/screen_capturer.hpp"
 #include "nrx/utils/logger.hpp"
 
 namespace nrx::core {
@@ -17,6 +19,12 @@ Application::~Application() {
 
 int Application::run() {
     NRX_INFO("Starting main loop...");
+
+    if (const auto platformResult = setupPlatformRuntime(); !platformResult) {
+        NRX_CRITICAL("Failed to setup platform runtime: {}", platformResult.error());
+        return -1;
+    }
+
     isRunning.store(true);
     dxContext = std::make_unique<nrx::gfx::DxContext>();
     if (const auto result = dxContext->init(); !result) {
@@ -25,9 +33,22 @@ int Application::run() {
         return -1;
     }
 
-    nrx::gfx::DxContext* inferenceDxCtx = dxContext.get();
-    inferenceThread = std::jthread(
-        [this, inferenceDxCtx](const std::stop_token& st) { inferenceLoop(st, inferenceDxCtx); });
+    screenCapturer = std::make_unique<nrx::gfx::ScreenCapturer>(dxContext.get());
+    if (const auto result = screenCapturer->init(); !result) {
+        NRX_CRITICAL("Failed to initialize ScreenCapturer: {}",
+                     nrx::gfx::captureErrorToString(result.error()));
+        shutdown();
+        return -1;
+    }
+
+    if (const auto result = screenCapturer->start(); !result) {
+        NRX_CRITICAL("Failed to start ScreenCapturer: {}",
+                     nrx::gfx::captureErrorToString(result.error()));
+        shutdown();
+        return -1;
+    }
+
+    inferenceThread = std::jthread([this](const std::stop_token& st) { inferenceLoop(st); });
 
     overlayLoop();
     shutdown();
@@ -45,23 +66,49 @@ void Application::shutdown() {
         inferenceThread.join();
     }
 
+    if (screenCapturer != nullptr) {
+        screenCapturer->stop();
+        screenCapturer.reset();
+    }
+
     dxContext.reset();
 }
 
-void Application::inferenceLoop(const std::stop_token& stopToken, nrx::gfx::DxContext* dxCtx) {
+void Application::inferenceLoop(const std::stop_token& stopToken) {
     NRX_INFO("Inference thread started.");
-    if (dxCtx == nullptr) {
-        NRX_CRITICAL("Inference loop started without a valid DxContext.");
+    if (dxContext == nullptr || screenCapturer == nullptr) {
+        NRX_CRITICAL("Inference loop started without required runtime components.");
         return;
     }
 
+    int emptyFrameStreak = 0;
+
     while (!stopToken.stop_requested()) {
-        if (dxCtx->isDeviceLost()) {
+        if (dxContext->isDeviceLost()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        const auto frameResult = screenCapturer->acquireNextFrame();
+        if (!frameResult) {
+            if (frameResult.error() == nrx::gfx::CaptureError::NoNewFrameAvailable) {
+                ++emptyFrameStreak;
+                std::this_thread::yield();
+                if ((emptyFrameStreak % 256) == 0) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                continue;
+            }
+
+            NRX_WARN("Failed to acquire frame: {}",
+                     nrx::gfx::captureErrorToString(frameResult.error()));
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+
+        emptyFrameStreak = 0;
+
+        // TODO: Wire the acquired frame into the inference pipeline.
     }
 }
 
@@ -71,7 +118,7 @@ void Application::overlayLoop() {
     while (isRunning.load()) {
         if (dxContext != nullptr && dxContext->isDeviceLost()) {
             NRX_WARN("Overlay detected device lost. Reinitializing DxContext...");
-            if (const auto result = dxContext->handleDeviceLost(); !result.has_value()) {
+            if (const auto result = dxContext->handleDeviceLost(); !result) {
                 NRX_CRITICAL("Failed to recover from device lost: {}", result.error());
                 isRunning.store(false);
                 break;
@@ -86,6 +133,30 @@ void Application::overlayLoop() {
 }
 
 void Application::reinitializeEnginesAfterDeviceReset() {
-    NRX_INFO("Device reset completed. Engine reinitialization hook called.");
+    if (screenCapturer == nullptr) {
+        NRX_CRITICAL("ScreenCapturer is unavailable during device reset recovery.");
+        isRunning.store(false);
+        return;
+    }
+
+    NRX_INFO("Reinitializing ScreenCapturer after device reset...");
+
+    screenCapturer->stop();
+
+    if (const auto result = screenCapturer->init(); !result) {
+        NRX_CRITICAL("Failed to reinitialize ScreenCapturer: {}",
+                     nrx::gfx::captureErrorToString(result.error()));
+        isRunning.store(false);
+        return;
+    }
+
+    if (const auto result = screenCapturer->start(); !result) {
+        NRX_CRITICAL("Failed to restart ScreenCapturer: {}",
+                     nrx::gfx::captureErrorToString(result.error()));
+        isRunning.store(false);
+        return;
+    }
+
+    NRX_INFO("ScreenCapturer reinitialized successfully.");
 }
 } // namespace nrx::core
