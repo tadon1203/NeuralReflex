@@ -1,0 +1,47 @@
+BasedOnStyle: LLVM
+IndentWidth: 4
+
+AlignConsecutiveMacros:
+  Enabled: true
+  AcrossEmptyLines: false
+  AcrossComments: false
+
+IncludeBlocks: Regroup
+IncludeCategories:
+  # 1) C system headers
+  - Regex: '^<(assert|ctype|errno|float|limits|locale|math|setjmp|signal|stdarg|stddef|stdint|stdio|stdlib|string|time|uchar|wchar|wctype)\.h>$'
+    Priority: 1
+    SortPriority: 0
+    CaseSensitive: false
+  # 2) C++ standard library headers (no slash, no extension)
+  - Regex: "^<[A-Za-z0-9_]+>$"
+    Priority: 2
+    SortPriority: 0
+    CaseSensitive: false
+  # 3) Explicit third-party headers used by this project
+  #    - Dear ImGui
+  #    - ONNX Runtime
+  #    - nlohmann/json
+  #    - GoogleTest / GoogleMock
+  - Regex: '^<(imgui.*|onnxruntime.*|core/session/onnxruntime.*|json\.hpp|nlohmann/json\.hpp|gtest/.*|gmock/.*)>$'
+    Priority: 3
+    SortPriority: 0
+    CaseSensitive: false
+  # 4) Other angle-bracket headers (SDK/system/other)
+  - Regex: "^<.*>$"
+    Priority: 4
+    SortPriority: 0
+    CaseSensitive: false
+  # 5) Project headers
+  - Regex: '^".*"$'
+    Priority: 5
+    SortPriority: 0
+    CaseSensitive: false
+IncludeIsMainRegex: "([-_](test|unittest))?$"
+IncludeIsMainSourceRegex: ""
+
+PointerAlignment: Left
+ColumnLimit: 100
+LineEnding: LF
+InsertNewlineAtEOF: true
+KeepEmptyLinesAtEOF: true
