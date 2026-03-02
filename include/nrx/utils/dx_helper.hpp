@@ -9,12 +9,10 @@
 
 namespace nrx::utils {
 
-#define NRX_DX_CHECK(hr, message)                                                                  \
-    if (const HRESULT checkedHr = (hr); FAILED(checkedHr)) {                                       \
-        const auto fullMsg =                                                                       \
-            std::format("{}: {}", (message), ::nrx::utils::DxHelper::getErrorString(checkedHr));   \
-        NRX_CRITICAL("{}", fullMsg);                                                               \
-        return std::unexpected(fullMsg);                                                           \
+#define NRX_DX_CHECK(hr, message, errorCode)                                                    \
+    if (const HRESULT checkedHr = (hr); FAILED(checkedHr)) {                                   \
+        NRX_ERROR("{}: {}", (message), ::nrx::utils::DxHelper::getErrorString(checkedHr));     \
+        return std::unexpected((errorCode));                                                    \
     }
 
 struct DxHelper {

@@ -147,20 +147,14 @@ class ScreenCapturer::Impl {
 
         winrt::com_ptr<IDXGIDevice> dxgiDevice;
         const HRESULT dxgiHr = d11Device->QueryInterface(IID_PPV_ARGS(dxgiDevice.put()));
-        if (FAILED(dxgiHr)) {
-            NRX_ERROR("Failed to query IDXGIDevice from D3D11 device: {}",
-                      nrx::utils::DxHelper::getErrorString(dxgiHr));
-            return std::unexpected(CaptureError::DxgiDeviceQueryFailed);
-        }
+        NRX_DX_CHECK(dxgiHr, "Failed to query IDXGIDevice from D3D11 device",
+                     CaptureError::DxgiDeviceQueryFailed);
 
         winrt::com_ptr<IInspectable> inspectableDevice;
         const HRESULT interopHr =
             CreateDirect3D11DeviceFromDXGIDevice(dxgiDevice.get(), inspectableDevice.put());
-        if (FAILED(interopHr)) {
-            NRX_ERROR("Failed to create WinRT Direct3D11 device: {}",
-                      nrx::utils::DxHelper::getErrorString(interopHr));
-            return std::unexpected(CaptureError::WinRtDeviceCreationFailed);
-        }
+        NRX_DX_CHECK(interopHr, "Failed to create WinRT Direct3D11 device",
+                     CaptureError::WinRtDeviceCreationFailed);
 
         d3dDevice =
             inspectableDevice.as<winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice>();
@@ -171,8 +165,8 @@ class ScreenCapturer::Impl {
         }
 
         const auto& monitors = monitorsResult.value();
-        const auto primaryIt = std::find_if(monitors.begin(), monitors.end(),
-                                            [](const MonitorInfo& info) { return info.isPrimary; });
+        const auto primaryIt =
+            std::ranges::find_if(monitors, [](const MonitorInfo& info) { return info.isPrimary; });
         if (primaryIt == monitors.end()) {
             return std::unexpected(CaptureError::NoPrimaryMonitor);
         }
@@ -188,11 +182,8 @@ class ScreenCapturer::Impl {
             selectedMonitor,
             winrt::guid_of<winrt::Windows::Graphics::Capture::GraphicsCaptureItem>(),
             winrt::put_abi(item));
-        if (FAILED(itemHr)) {
-            NRX_ERROR("Failed to create GraphicsCaptureItem for primary monitor: {}",
-                      nrx::utils::DxHelper::getErrorString(itemHr));
-            return std::unexpected(CaptureError::CaptureItemCreationFailed);
-        }
+        NRX_DX_CHECK(itemHr, "Failed to create GraphicsCaptureItem for primary monitor",
+                     CaptureError::CaptureItemCreationFailed);
 
         captureItem = item;
         initialized = true;
@@ -216,6 +207,7 @@ class ScreenCapturer::Impl {
                     winrt::Windows::Graphics::DirectX::DirectXPixelFormat::B8G8R8A8UIntNormalized,
                     2, captureItem.Size());
             captureSession = framePool.CreateCaptureSession(captureItem);
+            captureSession.IsBorderRequired(false);
             captureSession.StartCapture();
         } catch (const winrt::hresult_error& e) {
             NRX_ERROR("Failed to start screen capture: {}", winrt::to_string(e.message()));
@@ -267,26 +259,26 @@ class ScreenCapturer::Impl {
             return std::unexpected(CaptureError::NullFrameSurface);
         }
 
-        winrt::com_ptr<IUnknown> surfaceUnknown;
-        surfaceUnknown.copy_from(reinterpret_cast<IUnknown*>(winrt::get_abi(surface)));
+        winrt::com_ptr<IInspectable> inspectableSurface;
+        winrt::copy_from_abi(inspectableSurface, winrt::get_abi(surface));
 
         winrt::com_ptr<Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>
             surfaceAccess;
-        const HRESULT accessHr = surfaceUnknown->QueryInterface(IID_PPV_ARGS(surfaceAccess.put()));
-        if (FAILED(accessHr)) {
+        try {
+            surfaceAccess =
+                inspectableSurface
+                    .as<Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
+        } catch (const winrt::hresult_error& e) {
             NRX_ERROR("Failed to query IDirect3DDxgiInterfaceAccess: {}",
-                      nrx::utils::DxHelper::getErrorString(accessHr));
+                      winrt::to_string(e.message()));
             return std::unexpected(CaptureError::SurfaceAccessQueryFailed);
         }
 
         winrt::com_ptr<ID3D11Texture2D> texture;
         const HRESULT textureHr =
             surfaceAccess->GetInterface(__uuidof(ID3D11Texture2D), texture.put_void());
-        if (FAILED(textureHr)) {
-            NRX_ERROR("Failed to get ID3D11Texture2D from frame surface: {}",
-                      nrx::utils::DxHelper::getErrorString(textureHr));
-            return std::unexpected(CaptureError::TextureQueryFailed);
-        }
+        NRX_DX_CHECK(textureHr, "Failed to get ID3D11Texture2D from frame surface",
+                     CaptureError::TextureQueryFailed);
 
         latestTexture = std::move(texture);
         return latestTexture.get();

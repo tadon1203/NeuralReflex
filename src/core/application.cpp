@@ -28,7 +28,8 @@ int Application::run() {
     isRunning.store(true);
     dxContext = std::make_unique<nrx::gfx::DxContext>();
     if (const auto result = dxContext->init(); !result) {
-        NRX_CRITICAL("Failed to initialize DxContext: {}", result.error());
+        NRX_CRITICAL("Failed to initialize DxContext: {}",
+                     nrx::gfx::dxContextErrorToString(result.error()));
         shutdown();
         return -1;
     }
@@ -119,7 +120,8 @@ void Application::overlayLoop() {
         if (dxContext != nullptr && dxContext->isDeviceLost()) {
             NRX_WARN("Overlay detected device lost. Reinitializing DxContext...");
             if (const auto result = dxContext->handleDeviceLost(); !result) {
-                NRX_CRITICAL("Failed to recover from device lost: {}", result.error());
+                NRX_CRITICAL("Failed to recover from device lost: {}",
+                             nrx::gfx::dxContextErrorToString(result.error()));
                 isRunning.store(false);
                 break;
             }

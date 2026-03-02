@@ -17,6 +17,53 @@
 
 namespace nrx::gfx {
 
+auto dxContextErrorToString(DxContextError error) -> std::string_view {
+    switch (error) {
+    case DxContextError::CreateFactoryFailed:
+        return "CreateFactoryFailed";
+    case DxContextError::FactoryNotInitialized:
+        return "FactoryNotInitialized";
+    case DxContextError::AdapterEnumerationFailed:
+        return "AdapterEnumerationFailed";
+    case DxContextError::NoHardwareAdapter:
+        return "NoHardwareAdapter";
+    case DxContextError::CreateD12DeviceFailed:
+        return "CreateD12DeviceFailed";
+    case DxContextError::D12DeviceNotInitialized:
+        return "D12DeviceNotInitialized";
+    case DxContextError::CreateD12QueueFailed:
+        return "CreateD12QueueFailed";
+    case DxContextError::CreateD11DeviceFailed:
+        return "CreateD11DeviceFailed";
+    case DxContextError::QueryD11AdvancedInterfacesFailed:
+        return "QueryD11AdvancedInterfacesFailed";
+    case DxContextError::D3DDevicesNotInitialized:
+        return "D3DDevicesNotInitialized";
+    case DxContextError::CreateSharedFenceFailed:
+        return "CreateSharedFenceFailed";
+    case DxContextError::CreateSharedFenceHandleFailed:
+        return "CreateSharedFenceHandleFailed";
+    case DxContextError::SharedFenceHandleNull:
+        return "SharedFenceHandleNull";
+    case DxContextError::OpenSharedFenceFailed:
+        return "OpenSharedFenceFailed";
+    case DxContextError::NotInitializedForFenceSignal:
+        return "NotInitializedForFenceSignal";
+    case DxContextError::SignalSharedFenceFailed:
+        return "SignalSharedFenceFailed";
+    case DxContextError::NotInitializedForD11FenceSignal:
+        return "NotInitializedForD11FenceSignal";
+    case DxContextError::SignalSharedFenceFromD11Failed:
+        return "SignalSharedFenceFromD11Failed";
+    case DxContextError::NotInitializedForD11FenceWait:
+        return "NotInitializedForD11FenceWait";
+    case DxContextError::WaitSharedFenceFromD11Failed:
+        return "WaitSharedFenceFromD11Failed";
+    }
+
+    return "UnknownDxContextError";
+}
+
 namespace {
 
 auto enableD3D12DebugLayer() -> void {
@@ -43,7 +90,7 @@ class DxContext::Impl {
     Impl(Impl&&) = delete;
     auto operator=(Impl&&) -> Impl& = delete;
 
-    auto init() -> std::expected<void, std::string> {
+    auto init() -> std::expected<void, DxContextError> {
         releaseResources();
 
         if (const auto result = createFactory(); !result) {
@@ -67,7 +114,7 @@ class DxContext::Impl {
         return {};
     }
 
-    auto handleDeviceLost() -> std::expected<void, std::string> {
+    auto handleDeviceLost() -> std::expected<void, DxContextError> {
         NRX_WARN("Device lost detected. Recreating DX11/DX12 resources.");
 
         releaseResources();
@@ -97,37 +144,40 @@ class DxContext::Impl {
 
     [[nodiscard]] auto getFenceValue() const -> uint64_t { return fenceValue; }
 
-    auto signalSharedFence() -> std::expected<void, std::string> {
+    auto signalSharedFence() -> std::expected<void, DxContextError> {
         if (!d12Queue || !sharedFence) {
-            return std::unexpected("Cannot signal fence before DxContext initialization.");
+            return std::unexpected(DxContextError::NotInitializedForFenceSignal);
         }
 
         fenceValue += 1;
         const HRESULT hr = d12Queue->Signal(sharedFence.get(), fenceValue);
-        NRX_DX_CHECK(hr, "Failed to signal shared fence");
+        NRX_DX_CHECK(hr, "Failed to signal shared fence",
+                             DxContextError::SignalSharedFenceFailed);
 
         return {};
     }
 
-    auto signalSharedFenceFromD11() -> std::expected<void, std::string> {
+    auto signalSharedFenceFromD11() -> std::expected<void, DxContextError> {
         if (!d11Context || !d11SharedFence) {
-            return std::unexpected("Cannot signal shared fence from D3D11 before initialization.");
+            return std::unexpected(DxContextError::NotInitializedForD11FenceSignal);
         }
 
         fenceValue += 1;
         const HRESULT hr = d11Context->Signal(d11SharedFence.get(), fenceValue);
-        NRX_DX_CHECK(hr, "Failed to signal shared fence from D3D11");
+        NRX_DX_CHECK(hr, "Failed to signal shared fence from D3D11",
+                             DxContextError::SignalSharedFenceFromD11Failed);
 
         return {};
     }
 
-    auto waitSharedFenceFromD11(uint64_t targetValue) -> std::expected<void, std::string> {
+    auto waitSharedFenceFromD11(uint64_t targetValue) -> std::expected<void, DxContextError> {
         if (!d11Context || !d11SharedFence) {
-            return std::unexpected("Cannot wait shared fence from D3D11 before initialization.");
+            return std::unexpected(DxContextError::NotInitializedForD11FenceWait);
         }
 
         const HRESULT hr = d11Context->Wait(d11SharedFence.get(), targetValue);
-        NRX_DX_CHECK(hr, "Failed to wait shared fence from D3D11");
+        NRX_DX_CHECK(hr, "Failed to wait shared fence from D3D11",
+                             DxContextError::WaitSharedFenceFromD11Failed);
 
         return {};
     }
@@ -137,26 +187,26 @@ class DxContext::Impl {
     void notifyDeviceLost() { deviceLost.store(true); }
 
   private:
-    auto createFactory() -> std::expected<void, std::string> {
+    auto createFactory() -> std::expected<void, DxContextError> {
         UINT factoryFlags = 0;
 #ifdef _DEBUG
         factoryFlags = DXGI_CREATE_FACTORY_DEBUG;
 #endif
 
         const HRESULT hr = CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(factory.put()));
-        NRX_DX_CHECK(hr, "Failed to create DXGI factory");
+        NRX_DX_CHECK(hr, "Failed to create DXGI factory", DxContextError::CreateFactoryFailed);
 
         return {};
     }
 
     [[nodiscard]] auto findHardwareAdapter() const
-        -> std::expected<winrt::com_ptr<IDXGIAdapter4>, std::string> {
+        -> std::expected<winrt::com_ptr<IDXGIAdapter4>, DxContextError> {
         if (cachedAdapter) {
             return cachedAdapter;
         }
 
         if (!factory) {
-            return std::unexpected("DXGI factory is not initialized.");
+            return std::unexpected(DxContextError::FactoryNotInitialized);
         }
 
         for (UINT adapterIndex = 0;; ++adapterIndex) {
@@ -167,7 +217,8 @@ class DxContext::Impl {
             if (hr == DXGI_ERROR_NOT_FOUND) {
                 break;
             }
-            NRX_DX_CHECK(hr, "Failed while enumerating adapters");
+            NRX_DX_CHECK(hr, "Failed while enumerating adapters",
+                                 DxContextError::AdapterEnumerationFailed);
 
             DXGI_ADAPTER_DESC1 descriptor{};
             adapter->GetDesc1(&descriptor);
@@ -183,10 +234,10 @@ class DxContext::Impl {
             }
         }
 
-        return std::unexpected("No suitable hardware adapter found for D3D12.");
+        return std::unexpected(DxContextError::NoHardwareAdapter);
     }
 
-    auto createD12Device() -> std::expected<void, std::string> {
+    auto createD12Device() -> std::expected<void, DxContextError> {
         enableD3D12DebugLayer();
 
         const auto adapterResult = findHardwareAdapter();
@@ -202,14 +253,15 @@ class DxContext::Impl {
             hr = D3D12CreateDevice(adapter.get(), D3D_FEATURE_LEVEL_11_0,
                                    IID_PPV_ARGS(d12Device.put()));
         }
-        NRX_DX_CHECK(hr, "Failed to create D3D12 device");
+        NRX_DX_CHECK(hr, "Failed to create D3D12 device",
+                             DxContextError::CreateD12DeviceFailed);
 
         return {};
     }
 
-    auto createD12Queue() -> std::expected<void, std::string> {
+    auto createD12Queue() -> std::expected<void, DxContextError> {
         if (!d12Device) {
-            return std::unexpected("D3D12 device is not initialized.");
+            return std::unexpected(DxContextError::D12DeviceNotInitialized);
         }
 
         D3D12_COMMAND_QUEUE_DESC queueDescription{};
@@ -220,14 +272,15 @@ class DxContext::Impl {
 
         const HRESULT hr =
             d12Device->CreateCommandQueue(&queueDescription, IID_PPV_ARGS(d12Queue.put()));
-        NRX_DX_CHECK(hr, "Failed to create D3D12 command queue");
+        NRX_DX_CHECK(hr, "Failed to create D3D12 command queue",
+                             DxContextError::CreateD12QueueFailed);
 
         return {};
     }
 
-    auto createD11Device() -> std::expected<void, std::string> {
+    auto createD11Device() -> std::expected<void, DxContextError> {
         if (!factory) {
-            return std::unexpected("DXGI factory is not initialized.");
+            return std::unexpected(DxContextError::FactoryNotInitialized);
         }
 
         const auto adapterResult = findHardwareAdapter();
@@ -256,14 +309,14 @@ class DxContext::Impl {
             static_cast<UINT>(std::size(featureLevels)), D3D11_SDK_VERSION, baseDevice.put(),
             &createdFeatureLevel, baseContext.put());
 
-        NRX_DX_CHECK(hr, "Failed to create D3D11 device");
+        NRX_DX_CHECK(hr, "Failed to create D3D11 device", DxContextError::CreateD11DeviceFailed);
 
         d11Device = baseDevice.try_as<ID3D11Device5>();
         d11Context = baseContext.try_as<ID3D11DeviceContext4>();
 
         if (!d11Device || !d11Context) {
-            return std::unexpected(
-                "Failed to query D3D11 advanced interfaces (ID3D11Device5/ID3D11DeviceContext4).");
+            NRX_ERROR("Failed to query D3D11 advanced interfaces (ID3D11Device5/ID3D11DeviceContext4).");
+            return std::unexpected(DxContextError::QueryD11AdvancedInterfacesFailed);
         }
 
         NRX_INFO("D3D11 created with feature level: 0x{:X}",
@@ -272,29 +325,31 @@ class DxContext::Impl {
         return {};
     }
 
-    auto createSharedFence() -> std::expected<void, std::string> {
+    auto createSharedFence() -> std::expected<void, DxContextError> {
         if (!d12Device || !d11Device) {
-            return std::unexpected(
-                "D3D11/D3D12 devices must be initialized before shared fence creation.");
+            return std::unexpected(DxContextError::D3DDevicesNotInitialized);
         }
 
         fenceValue = 0;
 
         const HRESULT fenceHr = d12Device->CreateFence(fenceValue, D3D12_FENCE_FLAG_SHARED,
                                                        IID_PPV_ARGS(sharedFence.put()));
-        NRX_DX_CHECK(fenceHr, "Failed to create shared D3D12 fence");
+        NRX_DX_CHECK(fenceHr, "Failed to create shared D3D12 fence",
+                             DxContextError::CreateSharedFenceFailed);
 
         const HRESULT handleHr = d12Device->CreateSharedHandle(
             sharedFence.get(), nullptr, GENERIC_ALL, nullptr, &sharedFenceHandle);
-        NRX_DX_CHECK(handleHr, "Failed to create shared fence handle");
+        NRX_DX_CHECK(handleHr, "Failed to create shared fence handle",
+                             DxContextError::CreateSharedFenceHandleFailed);
 
         if (sharedFenceHandle == nullptr) {
-            return std::unexpected("CreateSharedHandle returned a null handle.");
+            return std::unexpected(DxContextError::SharedFenceHandleNull);
         }
 
         const HRESULT openFenceHr =
             d11Device->OpenSharedFence(sharedFenceHandle, IID_PPV_ARGS(d11SharedFence.put()));
-        NRX_DX_CHECK(openFenceHr, "Failed to open shared fence on D3D11 device");
+        NRX_DX_CHECK(openFenceHr, "Failed to open shared fence on D3D11 device",
+                             DxContextError::OpenSharedFenceFailed);
 
         return {};
     }
@@ -337,9 +392,9 @@ DxContext::DxContext() : impl(std::make_unique<Impl>()) {}
 
 DxContext::~DxContext() = default;
 
-auto DxContext::init() -> std::expected<void, std::string> { return impl->init(); }
+auto DxContext::init() -> std::expected<void, DxContextError> { return impl->init(); }
 
-auto DxContext::handleDeviceLost() -> std::expected<void, std::string> {
+auto DxContext::handleDeviceLost() -> std::expected<void, DxContextError> {
     return impl->handleDeviceLost();
 }
 
@@ -361,15 +416,16 @@ auto DxContext::getSharedFenceHandle() const -> DxContext::SharedHandle {
 
 auto DxContext::getFenceValue() const -> uint64_t { return impl->getFenceValue(); }
 
-auto DxContext::signalSharedFence() -> std::expected<void, std::string> {
+auto DxContext::signalSharedFence() -> std::expected<void, DxContextError> {
     return impl->signalSharedFence();
 }
 
-auto DxContext::signalSharedFenceFromD11() -> std::expected<void, std::string> {
+auto DxContext::signalSharedFenceFromD11() -> std::expected<void, DxContextError> {
     return impl->signalSharedFenceFromD11();
 }
 
-auto DxContext::waitSharedFenceFromD11(uint64_t targetValue) -> std::expected<void, std::string> {
+auto DxContext::waitSharedFenceFromD11(uint64_t targetValue)
+    -> std::expected<void, DxContextError> {
     return impl->waitSharedFenceFromD11(targetValue);
 }
 
