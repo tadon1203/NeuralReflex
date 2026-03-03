@@ -7,6 +7,7 @@
 
 namespace nrx::gfx {
 class DxContext;
+class GfxBridge;
 class ScreenCapturer;
 }
 
@@ -32,6 +33,7 @@ class Application {
 
     std::atomic_bool running{false};
     std::unique_ptr<nrx::gfx::DxContext> dxContext;
+    std::unique_ptr<nrx::gfx::GfxBridge> gfxBridge;
     std::unique_ptr<nrx::gfx::ScreenCapturer> screenCapturer;
     std::jthread inferenceThread;
 };

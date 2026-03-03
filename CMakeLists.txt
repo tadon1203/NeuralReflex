@@ -24,6 +24,7 @@ add_executable(${PROJECT_NAME}
     src/utils/dx_helper.cpp
     src/gfx/dx_context.cpp
     src/gfx/screen_capturer.cpp
+    src/gfx/gfx_bridge.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE 

@@ -5,6 +5,7 @@
 
 #include "core/platform.hpp"
 #include "nrx/gfx/dx_context.hpp"
+#include "nrx/gfx/gfx_bridge.hpp"
 #include "nrx/gfx/screen_capturer.hpp"
 #include "nrx/utils/logger.hpp"
 
@@ -49,6 +50,8 @@ int Application::run() {
         return -1;
     }
 
+    gfxBridge = std::make_unique<nrx::gfx::GfxBridge>(dxContext.get());
+
     inferenceThread = std::jthread([this](const std::stop_token& st) { inferenceLoop(st); });
 
     overlayLoop();
@@ -72,12 +75,17 @@ void Application::shutdown() {
         screenCapturer.reset();
     }
 
+    if (gfxBridge != nullptr) {
+        gfxBridge->reset();
+        gfxBridge.reset();
+    }
+
     dxContext.reset();
 }
 
 void Application::inferenceLoop(const std::stop_token& stopToken) {
     NRX_INFO("Inference thread started.");
-    if (dxContext == nullptr || screenCapturer == nullptr) {
+    if (dxContext == nullptr || screenCapturer == nullptr || gfxBridge == nullptr) {
         NRX_CRITICAL("Inference loop started without required runtime components.");
         return;
     }
@@ -109,6 +117,20 @@ void Application::inferenceLoop(const std::stop_token& stopToken) {
 
         emptyFrameStreak = 0;
 
+        if (const auto mapResult = gfxBridge->registerTexture(frameResult.value()); !mapResult) {
+            NRX_WARN("Failed to register texture in GfxBridge: {}",
+                     nrx::gfx::bridgeErrorToString(mapResult.error()));
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+
+        if (const auto syncResult = gfxBridge->synchronize(); !syncResult) {
+            NRX_WARN("Failed to synchronize GfxBridge: {}",
+                     nrx::gfx::bridgeErrorToString(syncResult.error()));
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+
         // TODO: Wire the acquired frame into the inference pipeline.
     }
 }
@@ -135,8 +157,8 @@ void Application::overlayLoop() {
 }
 
 void Application::reinitializeEnginesAfterDeviceReset() {
-    if (screenCapturer == nullptr) {
-        NRX_CRITICAL("ScreenCapturer is unavailable during device reset recovery.");
+    if (screenCapturer == nullptr || gfxBridge == nullptr) {
+        NRX_CRITICAL("Runtime components are unavailable during device reset recovery.");
         running.store(false);
         return;
     }
@@ -159,6 +181,8 @@ void Application::reinitializeEnginesAfterDeviceReset() {
         return;
     }
 
-    NRX_INFO("ScreenCapturer reinitialized successfully.");
+    gfxBridge->reset();
+
+    NRX_INFO("ScreenCapturer and GfxBridge reinitialized successfully.");
 }
 } // namespace nrx::core
