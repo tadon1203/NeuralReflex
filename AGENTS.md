@@ -34,6 +34,7 @@ Use CMake presets for reproducible local builds.
 - Naming: follow the naming rules configured in `.clang-tidy` for symbols (types, functions, variables).
 - Function naming: use descriptive verb phrases in `lowerCamelCase`; prefer imperative or direct action-oriented forms.
 - Variable naming: use `camelBack` and noun-based names.
+- Type-deduction rule: when the initializer already states the target type via `static_cast<T>(...)`, prefer `const auto` over repeating `T` on the left-hand side.
 - Boolean naming exception: state-word booleans are allowed.
 - Prefix guidance: when context is already clear, avoid `is`/`has` prefixes for booleans.
 - Small-scope exception: short counter/iterator names (for example `i`, `j`) are permitted.
