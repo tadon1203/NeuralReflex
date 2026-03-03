@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <memory>
@@ -9,6 +8,14 @@
 #include "nrx/inference/types.hpp"
 
 struct ID3D12Resource;
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmicrosoft-enum-forward-reference"
+#endif
+using D3D12_RESOURCE_STATES = enum D3D12_RESOURCE_STATES; // NOLINT(readability-identifier-naming)
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 
 namespace nrx::gfx {
 class DxContext;
@@ -34,10 +41,10 @@ class Postprocessor {
     Postprocessor(Postprocessor&&) = delete;
     auto operator=(Postprocessor&&) -> Postprocessor& = delete;
 
-    auto init(nrx::gfx::DxContext* dxContext,
-              std::span<const int64_t> outputShape,
+    auto init(nrx::gfx::DxContext* dxContext, std::span<const int64_t> outputShape,
               Resolution inputResolution) -> std::expected<void, InferenceError>;
-    auto dispatch(ID3D12Resource* rawOutputResource) -> std::expected<void, InferenceError>;
+    auto dispatch(ID3D12Resource* rawOutputResource, D3D12_RESOURCE_STATES currentState)
+        -> std::expected<void, InferenceError>;
     auto readbackFinalResults() -> std::expected<DetectionResults, InferenceError>;
     void reset();
 

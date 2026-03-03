@@ -118,6 +118,9 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime/1.25.0/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime/1.25.0/include/onnxruntime/core/session
 )
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    NRX_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+)
 
 add_dependencies(${PROJECT_NAME} generate_embedded_shaders)
 set_source_files_properties(

@@ -10,6 +10,7 @@
 #include <onnxruntime/core/providers/dml/dml_provider_factory.h>
 #include <onnxruntime/core/session/onnxruntime_cxx_api.h>
 
+#include <DirectML.h>
 #include <Windows.h>
 #include <d3d12.h>
 #include <winrt/base.h>
@@ -51,15 +52,6 @@ class OrtSessionManager::Impl {
             sessionOptions = std::make_unique<Ort::SessionOptions>();
             sessionOptions->SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
 
-            OrtStatus* dmlStatus = OrtSessionOptionsAppendExecutionProvider_DML(*sessionOptions, 0);
-            if (dmlStatus != nullptr) {
-                const char* message = Ort::GetApi().GetErrorMessage(dmlStatus);
-                NRX_ERROR("OrtSessionManager DML EP setup failed: {}", message);
-                Ort::GetApi().ReleaseStatus(dmlStatus);
-                reset();
-                return std::unexpected(InferenceError::SessionInitFailed);
-            }
-
             const OrtApi& api = Ort::GetApi();
             const void* providerApi = nullptr;
             OrtStatus* providerStatus =
@@ -76,6 +68,38 @@ class OrtSessionManager::Impl {
                 return std::unexpected(InferenceError::SessionInitFailed);
             }
             dmlApi = static_cast<const OrtDmlApi*>(providerApi);
+
+            auto* d12Device = context->getD12Device();
+            auto* d12Queue = context->getD12Queue();
+            if (d12Device == nullptr || d12Queue == nullptr) {
+                reset();
+                return std::unexpected(InferenceError::SessionInitFailed);
+            }
+
+            const HRESULT createDmlDeviceHr =
+                DMLCreateDevice(d12Device, DML_CREATE_DEVICE_FLAG_NONE, IID_PPV_ARGS(dmlDevice.put()));
+            if (FAILED(createDmlDeviceHr)) {
+                const auto removedReason = d12Device->GetDeviceRemovedReason();
+                NRX_ERROR("OrtSessionManager failed to create IDMLDevice: {}",
+                          nrx::utils::DxHelper::getErrorString(
+                              static_cast<std::int32_t>(createDmlDeviceHr)));
+                NRX_ERROR("OrtSessionManager D3D12 device removed reason: {}",
+                          nrx::utils::DxHelper::getErrorString(
+                              static_cast<std::int32_t>(removedReason)));
+                reset();
+                return std::unexpected(InferenceError::SessionInitFailed);
+            }
+
+            OrtStatus* dmlStatus =
+                dmlApi->SessionOptionsAppendExecutionProvider_DML1(*sessionOptions, dmlDevice.get(),
+                                                                   d12Queue);
+            if (dmlStatus != nullptr) {
+                const char* message = Ort::GetApi().GetErrorMessage(dmlStatus);
+                NRX_ERROR("OrtSessionManager DML EP setup failed: {}", message);
+                Ort::GetApi().ReleaseStatus(dmlStatus);
+                reset();
+                return std::unexpected(InferenceError::SessionInitFailed);
+            }
 
             const std::wstring modelPathWide = modelPath.wstring();
             session = std::make_unique<Ort::Session>(*env, modelPathWide.c_str(), *sessionOptions);
@@ -119,20 +143,14 @@ class OrtSessionManager::Impl {
             outputDescription.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
             outputDescription.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
-            auto* d12Device = context->getD12Device();
-            if (d12Device == nullptr) {
-                reset();
-                return std::unexpected(InferenceError::SessionInitFailed);
-            }
-
             const HRESULT createOutputHr = d12Device->CreateCommittedResource(
                 &outputHeapProperties, D3D12_HEAP_FLAG_NONE, &outputDescription,
                 D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(outputResource.put()));
             NRX_DX_CHECK(createOutputHr, "OrtSessionManager output resource creation failed",
                          InferenceError::SessionInitFailed);
 
-            OrtStatus* createOutputAllocationStatus =
-                dmlApi->CreateGPUAllocationFromD3DResource(outputResource.get(), &outputDmlAllocation);
+            OrtStatus* createOutputAllocationStatus = dmlApi->CreateGPUAllocationFromD3DResource(
+                outputResource.get(), &outputDmlAllocation);
             if (createOutputAllocationStatus != nullptr || outputDmlAllocation == nullptr) {
                 const char* message =
                     createOutputAllocationStatus != nullptr
@@ -160,7 +178,7 @@ class OrtSessionManager::Impl {
     }
 
     auto run(ID3D12Resource* inputTensorResource)
-        -> std::expected<ID3D12Resource*, InferenceError> {
+        -> std::expected<OrtSessionOutput, InferenceError> {
         if (!initialized || dxContext == nullptr || session == nullptr || ioBinding == nullptr ||
             dmlMemoryInfo == nullptr || dmlApi == nullptr || outputResource == nullptr ||
             outputDmlAllocation == nullptr) {
@@ -198,10 +216,10 @@ class OrtSessionManager::Impl {
             Ort::Value inputValue = Ort::Value::CreateTensor(
                 *dmlMemoryInfo, dmlAllocation, static_cast<size_t>(inputBytes), inputShape.data(),
                 inputShape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
-            Ort::Value outputValue =
-                Ort::Value::CreateTensor(*dmlMemoryInfo, outputDmlAllocation,
-                                         static_cast<size_t>(outputBytes), outputShapeData.data(),
-                                         outputShapeData.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
+            Ort::Value outputValue = Ort::Value::CreateTensor(
+                *dmlMemoryInfo, outputDmlAllocation, static_cast<size_t>(outputBytes),
+                outputShapeData.data(), outputShapeData.size(),
+                ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT);
 
             ioBinding->BindInput(inputName.c_str(), inputValue);
             ioBinding->BindOutput(outputName.c_str(), outputValue);
@@ -210,7 +228,11 @@ class OrtSessionManager::Impl {
             session->Run(runOptions, *ioBinding);
             ioBinding->SynchronizeOutputs();
             dmlApi->FreeGPUAllocation(dmlAllocation);
-            return outputResource.get();
+            outputResourceState = D3D12_RESOURCE_STATE_COMMON;
+            return OrtSessionOutput{
+                .resource = outputResource.get(),
+                .currentState = outputResourceState,
+            };
         } catch (const Ort::Exception& e) {
             NRX_ERROR("OrtSessionManager run failed: {}", e.what());
             dmlApi->FreeGPUAllocation(dmlAllocation);
@@ -241,7 +263,9 @@ class OrtSessionManager::Impl {
         }
         outputDmlAllocation = nullptr;
         outputResource = nullptr;
+        outputResourceState = D3D12_RESOURCE_STATE_COMMON;
         dmlApi = nullptr;
+        dmlDevice = nullptr;
         ioBinding.reset();
         session.reset();
         sessionOptions.reset();
@@ -262,7 +286,9 @@ class OrtSessionManager::Impl {
     std::unique_ptr<Ort::MemoryInfo> dmlMemoryInfo;
 
     const OrtDmlApi* dmlApi{nullptr};
+    winrt::com_ptr<IDMLDevice> dmlDevice;
     winrt::com_ptr<ID3D12Resource> outputResource;
+    D3D12_RESOURCE_STATES outputResourceState{D3D12_RESOURCE_STATE_COMMON};
     void* outputDmlAllocation{nullptr};
 
     std::string inputName;
@@ -282,7 +308,7 @@ auto OrtSessionManager::init(nrx::gfx::DxContext* dxContext, const std::filesyst
 }
 
 auto OrtSessionManager::run(ID3D12Resource* inputTensorResource)
-    -> std::expected<ID3D12Resource*, InferenceError> {
+    -> std::expected<OrtSessionOutput, InferenceError> {
     return impl->run(inputTensorResource);
 }
 

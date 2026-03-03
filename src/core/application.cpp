@@ -1,15 +1,44 @@
 #include "nrx/core/application.hpp"
 
+#include <array>
+#include <chrono>
+#include <filesystem>
 #include <memory>
 #include <thread>
+
+#include <d3d12.h>
 
 #include "core/platform.hpp"
 #include "nrx/gfx/dx_context.hpp"
 #include "nrx/gfx/gfx_bridge.hpp"
 #include "nrx/gfx/screen_capturer.hpp"
+#include "nrx/inference/inference_engine.hpp"
+#include "nrx/inference/types.hpp"
 #include "nrx/utils/logger.hpp"
 
 namespace nrx::core {
+
+namespace {
+
+[[nodiscard]] auto resolveModelPath() -> std::filesystem::path {
+    constexpr const char* kModelFileName = "ApxV7Harlan.onnx";
+    const auto modelRelativePath = std::filesystem::path{"assets"} / "models" / kModelFileName;
+    const std::array<std::filesystem::path, 3> candidates{
+        modelRelativePath,
+        std::filesystem::current_path() / modelRelativePath,
+        std::filesystem::path{NRX_SOURCE_DIR} / modelRelativePath,
+    };
+
+    for (const auto& candidatePath : candidates) {
+        if (std::filesystem::exists(candidatePath)) {
+            return candidatePath;
+        }
+    }
+
+    return candidates.back();
+}
+
+} // namespace
 
 Application::Application() { NRX_INFO("Initializing Application..."); }
 
@@ -51,6 +80,20 @@ int Application::run() {
     }
 
     gfxBridge = std::make_unique<nrx::gfx::GfxBridge>(dxContext.get());
+    inferenceEngine = std::make_unique<nrx::inference::InferenceEngine>();
+
+    const auto modelPath = resolveModelPath();
+    if (!std::filesystem::exists(modelPath)) {
+        NRX_CRITICAL("Inference model not found: {}", modelPath.string());
+        shutdown();
+        return -1;
+    }
+    if (const auto result = inferenceEngine->init(dxContext.get(), modelPath); !result) {
+        NRX_CRITICAL("Failed to initialize InferenceEngine: {}",
+                     nrx::inference::inferenceErrorToString(result.error()));
+        shutdown();
+        return -1;
+    }
 
     inferenceThread = std::jthread([this](const std::stop_token& st) { inferenceLoop(st); });
 
@@ -70,9 +113,16 @@ void Application::shutdown() {
         inferenceThread.join();
     }
 
+    const std::unique_lock<std::shared_mutex> lock(runtimeMutex);
+
     if (screenCapturer != nullptr) {
         screenCapturer->stop();
         screenCapturer.reset();
+    }
+
+    if (inferenceEngine != nullptr) {
+        inferenceEngine->reset();
+        inferenceEngine.reset();
     }
 
     if (gfxBridge != nullptr) {
@@ -85,53 +135,66 @@ void Application::shutdown() {
 
 void Application::inferenceLoop(const std::stop_token& stopToken) {
     NRX_INFO("Inference thread started.");
-    if (dxContext == nullptr || screenCapturer == nullptr || gfxBridge == nullptr) {
-        NRX_CRITICAL("Inference loop started without required runtime components.");
-        return;
-    }
 
     int emptyFrameStreak = 0;
 
     while (!stopToken.stop_requested()) {
-        if (dxContext->checkDeviceLost()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            continue;
-        }
+        bool shouldYield = false;
+        bool shouldSleep = false;
 
-        const auto frameResult = screenCapturer->acquireNextFrame();
-        if (!frameResult) {
-            if (frameResult.error() == nrx::gfx::CaptureError::NoNewFrameAvailable) {
-                ++emptyFrameStreak;
-                std::this_thread::yield();
-                if ((emptyFrameStreak % 256) == 0) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                }
-                continue;
+        {
+            const std::shared_lock<std::shared_mutex> lock(runtimeMutex);
+            if (dxContext == nullptr || screenCapturer == nullptr || gfxBridge == nullptr ||
+                inferenceEngine == nullptr) {
+                NRX_CRITICAL("Inference loop started without required runtime components.");
+                return;
             }
 
-            NRX_WARN("Failed to acquire frame: {}",
-                     nrx::gfx::captureErrorToString(frameResult.error()));
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            continue;
+            if (dxContext->checkDeviceLost()) {
+                shouldSleep = true;
+            } else {
+                const auto frameResult = screenCapturer->acquireNextFrame();
+                if (!frameResult) {
+                    if (frameResult.error() == nrx::gfx::CaptureError::NoNewFrameAvailable) {
+                        ++emptyFrameStreak;
+                        shouldYield = true;
+                        shouldSleep = ((emptyFrameStreak % 256) == 0);
+                    } else {
+                        NRX_WARN("Failed to acquire frame: {}",
+                                 nrx::gfx::captureErrorToString(frameResult.error()));
+                        shouldSleep = true;
+                    }
+                } else {
+                    emptyFrameStreak = 0;
+
+                    const auto mapResult = gfxBridge->registerTexture(frameResult.value());
+                    if (!mapResult) {
+                        NRX_WARN("Failed to register texture in GfxBridge: {}",
+                                 nrx::gfx::bridgeErrorToString(mapResult.error()));
+                        shouldSleep = true;
+                    } else if (const auto syncResult = gfxBridge->synchronize(); !syncResult) {
+                        NRX_WARN("Failed to synchronize GfxBridge: {}",
+                                 nrx::gfx::bridgeErrorToString(syncResult.error()));
+                        shouldSleep = true;
+                    } else {
+                        const auto inferenceResult = inferenceEngine->execute(
+                            mapResult.value(), D3D12_RESOURCE_STATE_COMMON);
+                        if (!inferenceResult) {
+                            NRX_WARN("Inference execution failed: {}",
+                                     nrx::inference::inferenceErrorToString(inferenceResult.error()));
+                            shouldSleep = true;
+                        }
+                    }
+                }
+            }
         }
 
-        emptyFrameStreak = 0;
-
-        if (const auto mapResult = gfxBridge->registerTexture(frameResult.value()); !mapResult) {
-            NRX_WARN("Failed to register texture in GfxBridge: {}",
-                     nrx::gfx::bridgeErrorToString(mapResult.error()));
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            continue;
+        if (shouldYield) {
+            std::this_thread::yield();
         }
-
-        if (const auto syncResult = gfxBridge->synchronize(); !syncResult) {
-            NRX_WARN("Failed to synchronize GfxBridge: {}",
-                     nrx::gfx::bridgeErrorToString(syncResult.error()));
+        if (shouldSleep) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            continue;
         }
-
-        // TODO: Wire the acquired frame into the inference pipeline.
     }
 }
 
@@ -157,7 +220,10 @@ void Application::overlayLoop() {
 }
 
 void Application::reinitializeEnginesAfterDeviceReset() {
-    if (screenCapturer == nullptr || gfxBridge == nullptr) {
+    const std::unique_lock<std::shared_mutex> lock(runtimeMutex);
+
+    if (screenCapturer == nullptr || gfxBridge == nullptr || inferenceEngine == nullptr ||
+        dxContext == nullptr) {
         NRX_CRITICAL("Runtime components are unavailable during device reset recovery.");
         running.store(false);
         return;
@@ -182,7 +248,22 @@ void Application::reinitializeEnginesAfterDeviceReset() {
     }
 
     gfxBridge->reset();
+    inferenceEngine->reset();
 
-    NRX_INFO("ScreenCapturer and GfxBridge reinitialized successfully.");
+    const auto modelPath = resolveModelPath();
+    if (!std::filesystem::exists(modelPath)) {
+        NRX_CRITICAL("Inference model not found during reset recovery: {}", modelPath.string());
+        running.store(false);
+        return;
+    }
+    if (const auto inferenceInitResult = inferenceEngine->init(dxContext.get(), modelPath);
+        !inferenceInitResult) {
+        NRX_CRITICAL("Failed to reinitialize InferenceEngine: {}",
+                     nrx::inference::inferenceErrorToString(inferenceInitResult.error()));
+        running.store(false);
+        return;
+    }
+
+    NRX_INFO("ScreenCapturer, GfxBridge, and InferenceEngine reinitialized successfully.");
 }
 } // namespace nrx::core

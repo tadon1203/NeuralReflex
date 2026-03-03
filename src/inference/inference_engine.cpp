@@ -55,17 +55,18 @@ class InferenceEngine::Impl {
             return std::unexpected(InferenceError::InvalidArguments);
         }
 
-        const auto preprocessed = preprocessor.preprocess(inputTexture, currentState);
+        const auto preprocessed = preprocessor.preprocess(inputTexture, currentState, currentState);
         if (!preprocessed) {
             return std::unexpected(preprocessed.error());
         }
 
-        const auto rawOutputResource = sessionManager.run(preprocessed.value());
-        if (!rawOutputResource) {
-            return std::unexpected(rawOutputResource.error());
+        const auto sessionOutput = sessionManager.run(preprocessed.value());
+        if (!sessionOutput) {
+            return std::unexpected(sessionOutput.error());
         }
 
-        const auto postDispatchResult = postprocessor.dispatch(rawOutputResource.value());
+        const auto postDispatchResult = postprocessor.dispatch(sessionOutput.value().resource,
+                                                               sessionOutput.value().currentState);
         if (!postDispatchResult) {
             return std::unexpected(postDispatchResult.error());
         }

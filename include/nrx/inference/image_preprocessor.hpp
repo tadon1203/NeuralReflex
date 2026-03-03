@@ -33,7 +33,9 @@ class ImagePreprocessor {
     auto operator=(ImagePreprocessor&&) -> ImagePreprocessor& = delete;
 
     auto init(nrx::gfx::DxContext* dxContext) -> std::expected<void, InferenceError>;
-    [[nodiscard]] auto preprocess(ID3D12Resource* inputTexture, D3D12_RESOURCE_STATES currentState)
+    [[nodiscard]] auto preprocess(ID3D12Resource* inputTexture,
+                                  D3D12_RESOURCE_STATES currentState,
+                                  D3D12_RESOURCE_STATES nextState)
         -> std::expected<ID3D12Resource*, InferenceError>;
     void reset();
 

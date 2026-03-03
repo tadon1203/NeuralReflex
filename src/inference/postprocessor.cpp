@@ -219,7 +219,8 @@ class Postprocessor::Impl {
         return {};
     }
 
-    auto dispatch(ID3D12Resource* rawOutputResource) -> std::expected<void, InferenceError> {
+    auto dispatch(ID3D12Resource* rawOutputResource, D3D12_RESOURCE_STATES currentState)
+        -> std::expected<void, InferenceError> {
         if (!initialized || dxContext == nullptr || rawOutputResource == nullptr) {
             return std::unexpected(InferenceError::NotInitialized);
         }
@@ -278,7 +279,7 @@ class Postprocessor::Impl {
         commandList->SetComputeRootDescriptorTable(1, descriptorGpuHandle(kSrvRawOutput));
         commandList->SetComputeRootDescriptorTable(2, descriptorGpuHandle(kUavCandidateBox));
 
-        auto rawOutputState = D3D12_RESOURCE_STATE_COMMON;
+        auto rawOutputState = currentState;
         transitionTrackedResource(rawOutputResource, rawOutputState,
                                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         transitionTrackedResource(candidateBox.get(), candidateBoxState,
@@ -431,7 +432,7 @@ class Postprocessor::Impl {
         activeClassCount = 0;
         classStartIndex = 0;
         useObjectness = false;
-        inputResolution = Resolution{0, 0};
+        inputResolution = Resolution{.width = 0, .height = 0};
 
         if (fenceEvent != nullptr) {
             CloseHandle(fenceEvent);
@@ -708,8 +709,7 @@ class Postprocessor::Impl {
             nullptr, IID_PPV_ARGS(resource.put())));
     }
 
-    auto createStructuredSrv(ID3D12Device* d12Device,
-                             ID3D12Resource* resource,
+    auto createStructuredSrv(ID3D12Device* d12Device, ID3D12Resource* resource,
                              const StructuredViewSpec& viewSpec) -> void {
         // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
         D3D12_SHADER_RESOURCE_VIEW_DESC description{};
@@ -725,8 +725,7 @@ class Postprocessor::Impl {
         // NOLINTEND(cppcoreguidelines-pro-type-union-access)
     }
 
-    auto createStructuredUav(ID3D12Device* d12Device,
-                             ID3D12Resource* resource,
+    auto createStructuredUav(ID3D12Device* d12Device, ID3D12Resource* resource,
                              const StructuredViewSpec& viewSpec) -> void {
         // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
         D3D12_UNORDERED_ACCESS_VIEW_DESC description{};
@@ -875,7 +874,7 @@ class Postprocessor::Impl {
     bool initialized{false};
     nrx::gfx::DxContext* dxContext{nullptr};
 
-    Resolution inputResolution{0, 0};
+    Resolution inputResolution{.width = 0, .height = 0};
     std::uint32_t anchorCount{0};
     std::uint32_t attributeCount{0};
     std::uint64_t outputElementCount{0};
@@ -930,9 +929,9 @@ auto Postprocessor::init(nrx::gfx::DxContext* dxContext, std::span<const int64_t
     return impl->init(dxContext, outputShape, inputResolution);
 }
 
-auto Postprocessor::dispatch(ID3D12Resource* rawOutputResource)
+auto Postprocessor::dispatch(ID3D12Resource* rawOutputResource, D3D12_RESOURCE_STATES currentState)
     -> std::expected<void, InferenceError> {
-    return impl->dispatch(rawOutputResource);
+    return impl->dispatch(rawOutputResource, currentState);
 }
 
 auto Postprocessor::readbackFinalResults() -> std::expected<DetectionResults, InferenceError> {

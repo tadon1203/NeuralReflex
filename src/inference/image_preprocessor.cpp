@@ -27,7 +27,9 @@ constexpr Resolution kInputResolution{
 constexpr std::uint32_t kInputChannels = 3;
 constexpr std::uint32_t kThreadGroupSize = 8;
 constexpr std::uint32_t kRootConstantCount = 8;
+constexpr DWORD kFenceWaitTimeoutMs = 5000;
 
+// Must match the HLSL cbuffer layout and root constant count.
 struct PreprocessConstants {
     std::uint32_t srcWidth;
     std::uint32_t srcHeight;
@@ -38,29 +40,21 @@ struct PreprocessConstants {
     float padY;
     float inv255;
 };
+static_assert((sizeof(PreprocessConstants) / sizeof(std::uint32_t)) == kRootConstantCount);
 
-[[nodiscard]] auto resolveSrvFormat(DXGI_FORMAT format) -> DXGI_FORMAT {
+[[nodiscard]] auto resolveSupportedSrvFormat(DXGI_FORMAT format) -> DXGI_FORMAT {
     switch (format) {
+    case DXGI_FORMAT_B8G8R8A8_UNORM:
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        return format;
     case DXGI_FORMAT_B8G8R8A8_TYPELESS:
         return DXGI_FORMAT_B8G8R8A8_UNORM;
+    case DXGI_FORMAT_R16G16B16A16_FLOAT:
+        return format;
     case DXGI_FORMAT_R16G16B16A16_TYPELESS:
         return DXGI_FORMAT_R16G16B16A16_FLOAT;
     default:
-        return format;
-    }
-}
-
-[[nodiscard]] auto isRejectedRgbaFormat(DXGI_FORMAT format) -> bool {
-    switch (format) {
-    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
-    case DXGI_FORMAT_R8G8B8A8_UNORM:
-    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
-    case DXGI_FORMAT_R8G8B8A8_UINT:
-    case DXGI_FORMAT_R8G8B8A8_SNORM:
-    case DXGI_FORMAT_R8G8B8A8_SINT:
-        return true;
-    default:
-        return false;
+        return DXGI_FORMAT_UNKNOWN;
     }
 }
 
@@ -103,7 +97,9 @@ class ImagePreprocessor::Impl {
         return {};
     }
 
-    auto preprocess(ID3D12Resource* inputTexture, D3D12_RESOURCE_STATES currentState)
+    auto preprocess(ID3D12Resource* inputTexture,
+                    D3D12_RESOURCE_STATES currentState,
+                    D3D12_RESOURCE_STATES nextState)
         -> std::expected<ID3D12Resource*, InferenceError> {
         if (!initialized || dxContext == nullptr || preprocessedTensor == nullptr) {
             return std::unexpected(InferenceError::NotInitialized);
@@ -115,7 +111,7 @@ class ImagePreprocessor::Impl {
             return std::unexpected(InferenceError::InvalidArguments);
         }
 
-        const auto bindResult = bindInputAndConstants(inputTexture, currentState);
+        const auto bindResult = bindInputAndConstants(inputTexture, currentState, nextState);
         if (!bindResult) {
             return std::unexpected(bindResult.error());
         }
@@ -216,6 +212,7 @@ class ImagePreprocessor::Impl {
         desc.Format = DXGI_FORMAT_UNKNOWN;
         desc.SampleDesc.Count = 1;
         desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
         const HRESULT createHr = d12Device->CreateCommittedResource(
             &heapProperties, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr,
@@ -409,7 +406,9 @@ class ImagePreprocessor::Impl {
         return {};
     }
 
-    auto bindInputAndConstants(ID3D12Resource* inputTexture, D3D12_RESOURCE_STATES currentState)
+    auto bindInputAndConstants(ID3D12Resource* inputTexture,
+                               D3D12_RESOURCE_STATES currentState,
+                               D3D12_RESOURCE_STATES nextState)
         -> std::expected<void, InferenceError> {
         // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
         auto* d12Device = dxContext->getD12Device();
@@ -428,12 +427,8 @@ class ImagePreprocessor::Impl {
         if (inputDescription.SampleDesc.Count > 1) {
             return std::unexpected(InferenceError::InvalidArguments);
         }
-        if (isRejectedRgbaFormat(inputDescription.Format)) {
-            return std::unexpected(InferenceError::InvalidArguments);
-        }
-
-        const DXGI_FORMAT srvFormat = resolveSrvFormat(inputDescription.Format);
-        if (srvFormat == DXGI_FORMAT_UNKNOWN || srvFormat == DXGI_FORMAT_B8G8R8A8_TYPELESS) {
+        const DXGI_FORMAT srvFormat = resolveSupportedSrvFormat(inputDescription.Format);
+        if (srvFormat == DXGI_FORMAT_UNKNOWN) {
             return std::unexpected(InferenceError::PreprocessFailed);
         }
 
@@ -486,7 +481,6 @@ class ImagePreprocessor::Impl {
         commandList->SetComputeRootDescriptorTable(2, descriptorGpuHandle(1));
 
         auto inputTrackedState = currentState;
-        const auto inputStateBeforeDispatch = inputTrackedState;
 
         transitionTrackedResource(inputTexture, inputTrackedState,
                                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -507,7 +501,7 @@ class ImagePreprocessor::Impl {
 
         transitionTrackedResource(preprocessedTensor.get(), preprocessedTensorState,
                                   D3D12_RESOURCE_STATE_COMMON);
-        transitionTrackedResource(inputTexture, inputTrackedState, inputStateBeforeDispatch);
+        transitionTrackedResource(inputTexture, inputTrackedState, nextState);
 
         const HRESULT closeListHr = commandList->Close();
         NRX_DX_CHECK(closeListHr, "ImagePreprocessor failed to close command list",
@@ -536,7 +530,22 @@ class ImagePreprocessor::Impl {
             const HRESULT eventHr = completionFence->SetEventOnCompletion(fenceValue, fenceEvent);
             NRX_DX_CHECK(eventHr, "ImagePreprocessor failed to set fence completion event",
                          InferenceError::PreprocessFailed);
-            WaitForSingleObject(fenceEvent, INFINITE);
+            const DWORD waitResult = WaitForSingleObject(fenceEvent, kFenceWaitTimeoutMs);
+            if (waitResult == WAIT_OBJECT_0) {
+                return {};
+            }
+            if (waitResult == WAIT_TIMEOUT) {
+                NRX_ERROR("ImagePreprocessor fence wait timed out after {} ms", kFenceWaitTimeoutMs);
+            } else {
+                const auto waitError =
+                    HRESULT_FROM_WIN32(static_cast<unsigned int>(GetLastError()));
+                NRX_ERROR("ImagePreprocessor fence wait failed: {}",
+                          nrx::utils::DxHelper::getErrorString(static_cast<std::int32_t>(waitError)));
+            }
+            if (dxContext != nullptr) {
+                dxContext->notifyDeviceLost();
+            }
+            return std::unexpected(InferenceError::DeviceLost);
         }
 
         return {};
@@ -579,9 +588,11 @@ auto ImagePreprocessor::init(nrx::gfx::DxContext* dxContext)
     return impl->init(dxContext);
 }
 
-auto ImagePreprocessor::preprocess(ID3D12Resource* inputTexture, D3D12_RESOURCE_STATES currentState)
+auto ImagePreprocessor::preprocess(ID3D12Resource* inputTexture,
+                                   D3D12_RESOURCE_STATES currentState,
+                                   D3D12_RESOURCE_STATES nextState)
     -> std::expected<ID3D12Resource*, InferenceError> {
-    return impl->preprocess(inputTexture, currentState);
+    return impl->preprocess(inputTexture, currentState, nextState);
 }
 
 void ImagePreprocessor::reset() { impl->reset(); }
