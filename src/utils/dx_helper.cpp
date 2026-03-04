@@ -8,7 +8,7 @@ namespace nrx::utils {
 
 namespace {
 
-[[nodiscard]] auto hresultHex(std::int32_t hr) -> std::string {
+[[nodiscard]] auto hresultHex(HRESULT hr) -> std::string {
     std::ostringstream stream;
     stream << "HRESULT 0x" << std::uppercase << std::hex << static_cast<unsigned int>(hr);
     return stream.str();
@@ -49,7 +49,7 @@ namespace {
 
 } // namespace
 
-auto DxHelper::getErrorString(std::int32_t hr) -> std::string {
+auto DxHelper::getErrorString(HRESULT hr) -> std::string {
     const DWORD errorCode = static_cast<DWORD>(static_cast<unsigned long>(hr));
 
     // Prefer an English message for stable console readability across locales/code pages.
@@ -66,7 +66,7 @@ auto DxHelper::getErrorString(std::int32_t hr) -> std::string {
 
 auto DxHelper::createBuffer(ID3D12Device* d12Device, std::uint64_t sizeBytes,
                             D3D12_RESOURCE_FLAGS flags, D3D12_HEAP_TYPE heapType)
-    -> std::expected<winrt::com_ptr<ID3D12Resource>, std::int32_t> {
+    -> DxResult<ID3D12Resource> {
     if (d12Device == nullptr || sizeBytes == 0) {
         return std::unexpected(E_INVALIDARG);
     }
@@ -87,18 +87,30 @@ auto DxHelper::createBuffer(ID3D12Device* d12Device, std::uint64_t sizeBytes,
     description.Flags = flags;
     // NOLINTEND(cppcoreguidelines-pro-type-union-access)
 
-    const auto initialState = (heapType == D3D12_HEAP_TYPE_READBACK) ? D3D12_RESOURCE_STATE_COPY_DEST
-                                                                      : D3D12_RESOURCE_STATE_COMMON;
+    const auto initialState = (heapType == D3D12_HEAP_TYPE_READBACK)
+                                  ? D3D12_RESOURCE_STATE_COPY_DEST
+                                  : D3D12_RESOURCE_STATE_COMMON;
 
     winrt::com_ptr<ID3D12Resource> resource;
     const HRESULT createHr =
         d12Device->CreateCommittedResource(&heapProperties, D3D12_HEAP_FLAG_NONE, &description,
                                            initialState, nullptr, IID_PPV_ARGS(resource.put()));
     if (FAILED(createHr)) {
-        return std::unexpected(static_cast<std::int32_t>(createHr));
+        return std::unexpected(createHr);
     }
 
     return resource;
+}
+
+auto DxHelper::createUavBuffer(ID3D12Device* d12Device, std::uint64_t sizeBytes)
+    -> DxResult<ID3D12Resource> {
+    return createBuffer(d12Device, sizeBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                        D3D12_HEAP_TYPE_DEFAULT);
+}
+
+auto DxHelper::createReadbackBuffer(ID3D12Device* d12Device, std::uint64_t sizeBytes)
+    -> DxResult<ID3D12Resource> {
+    return createBuffer(d12Device, sizeBytes, D3D12_RESOURCE_FLAG_NONE, D3D12_HEAP_TYPE_READBACK);
 }
 
 } // namespace nrx::utils

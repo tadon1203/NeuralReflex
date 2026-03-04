@@ -76,23 +76,22 @@ class OrtSessionManager::Impl {
                 return std::unexpected(InferenceError::SessionInitFailed);
             }
 
-            const HRESULT createDmlDeviceHr =
-                DMLCreateDevice(d12Device, DML_CREATE_DEVICE_FLAG_NONE, IID_PPV_ARGS(dmlDevice.put()));
+            const HRESULT createDmlDeviceHr = DMLCreateDevice(
+                d12Device, DML_CREATE_DEVICE_FLAG_NONE, IID_PPV_ARGS(dmlDevice.put()));
             if (FAILED(createDmlDeviceHr)) {
                 const auto removedReason = d12Device->GetDeviceRemovedReason();
                 NRX_ERROR("OrtSessionManager failed to create IDMLDevice: {}",
                           nrx::utils::DxHelper::getErrorString(
                               static_cast<std::int32_t>(createDmlDeviceHr)));
-                NRX_ERROR("OrtSessionManager D3D12 device removed reason: {}",
-                          nrx::utils::DxHelper::getErrorString(
-                              static_cast<std::int32_t>(removedReason)));
+                NRX_ERROR(
+                    "OrtSessionManager D3D12 device removed reason: {}",
+                    nrx::utils::DxHelper::getErrorString(static_cast<std::int32_t>(removedReason)));
                 reset();
                 return std::unexpected(InferenceError::SessionInitFailed);
             }
 
-            OrtStatus* dmlStatus =
-                dmlApi->SessionOptionsAppendExecutionProvider_DML1(*sessionOptions, dmlDevice.get(),
-                                                                   d12Queue);
+            OrtStatus* dmlStatus = dmlApi->SessionOptionsAppendExecutionProvider_DML1(
+                *sessionOptions, dmlDevice.get(), d12Queue);
             if (dmlStatus != nullptr) {
                 const char* message = Ort::GetApi().GetErrorMessage(dmlStatus);
                 NRX_ERROR("OrtSessionManager DML EP setup failed: {}", message);

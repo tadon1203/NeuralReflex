@@ -118,6 +118,7 @@ add_executable(${PROJECT_NAME}
     src/inference/image_preprocessor.cpp
     src/inference/ort_session_manager.cpp
     src/inference/postprocessor.cpp
+    src/inference/postprocessor_internal.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE
@@ -139,6 +140,7 @@ set_source_files_properties(
 )
 set_source_files_properties(
     src/inference/postprocessor.cpp
+    src/inference/postprocessor_internal.cpp
     PROPERTIES OBJECT_DEPENDS
     "${POST_DECODE_SHADER_HEADER};${POST_NMS_SHADER_HEADER};${POST_COMPACT_SHADER_HEADER}"
 )
