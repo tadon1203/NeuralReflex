@@ -5,13 +5,16 @@
 #include <bit>
 #include <cstdint>
 #include <expected>
+#include <initializer_list>
 #include <memory>
 #include <span>
 #include <string_view>
+#include <vector>
 
 #include <Windows.h>
-#include <d3d12.h>
 #include <d3dcompiler.h>
+#include <directx/d3d12.h>
+#include <directx/d3dx12.h>
 #include <winrt/base.h>
 
 #include "generated/inference/post_compact_cs_embedded.hpp"
@@ -29,21 +32,25 @@ constexpr std::size_t kMinDetAttributes = 5;
 constexpr UINT kThreadGroupSize = 256;
 constexpr UINT kRootConstantCount = 12;
 
-constexpr UINT kSrvRawOutput = 0;
-constexpr UINT kSrvCandidateBox = 1;
-constexpr UINT kSrvCandidateScoreClass = 2;
-constexpr UINT kSrvCandidateCount = 3;
-constexpr UINT kSrvSuppressed = 4;
+struct DescriptorTableLayout {
+    static constexpr UINT kSrvRawOutput = 0;
+    static constexpr UINT kSrvCandidateBox = 1;
+    static constexpr UINT kSrvCandidateScoreClass = 2;
+    static constexpr UINT kSrvCandidateCount = 3;
+    static constexpr UINT kSrvSuppressed = 4;
 
-constexpr UINT kUavCandidateBox = 5;
-constexpr UINT kUavCandidateScoreClass = 6;
-constexpr UINT kUavCandidateCount = 7;
-constexpr UINT kUavSuppressed = 8;
-constexpr UINT kUavFinalBox = 9;
-constexpr UINT kUavFinalScoreClass = 10;
-constexpr UINT kUavFinalCount = 11;
+    static constexpr UINT kUavCandidateBox = 5;
+    static constexpr UINT kUavCandidateScoreClass = 6;
+    static constexpr UINT kUavCandidateCount = 7;
+    static constexpr UINT kUavSuppressed = 8;
+    static constexpr UINT kUavFinalBox = 9;
+    static constexpr UINT kUavFinalScoreClass = 10;
+    static constexpr UINT kUavFinalCount = 11;
 
-constexpr UINT kDescriptorCount = 12;
+    static constexpr UINT kSrvCount = 5;
+    static constexpr UINT kUavCount = 7;
+    static constexpr UINT kDescriptorCount = 12;
+};
 
 enum class DetectionLayout : std::uint8_t {
     AttributeMajor = 0,
@@ -76,7 +83,7 @@ struct StructuredViewSpec {
     // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
     D3D12_DESCRIPTOR_RANGE1 srvRange{};
     srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRange.NumDescriptors = 5;
+    srvRange.NumDescriptors = DescriptorTableLayout::kSrvCount;
     srvRange.BaseShaderRegister = 0;
     srvRange.RegisterSpace = 0;
     srvRange.OffsetInDescriptorsFromTableStart = 0;
@@ -84,7 +91,7 @@ struct StructuredViewSpec {
 
     D3D12_DESCRIPTOR_RANGE1 uavRange{};
     uavRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-    uavRange.NumDescriptors = 7;
+    uavRange.NumDescriptors = DescriptorTableLayout::kUavCount;
     uavRange.BaseShaderRegister = 0;
     uavRange.RegisterSpace = 0;
     uavRange.OffsetInDescriptorsFromTableStart = 0;
@@ -244,8 +251,9 @@ class Postprocessor::Impl {
         rawOutputSrv.Buffer.NumElements = static_cast<UINT>(outputElementCount);
         rawOutputSrv.Buffer.StructureByteStride = sizeof(float);
         rawOutputSrv.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-        d12Device->CreateShaderResourceView(rawOutputResource, &rawOutputSrv,
-                                            descriptorCpuHandle(kSrvRawOutput));
+        d12Device->CreateShaderResourceView(
+            rawOutputResource, &rawOutputSrv,
+            descriptorCpuHandle(DescriptorTableLayout::kSrvRawOutput));
         // NOLINTEND(cppcoreguidelines-pro-type-union-access)
 
         const HRESULT resetAllocatorHr = commandAllocator->Reset();
@@ -276,73 +284,63 @@ class Postprocessor::Impl {
             .nmsIouThreshold = config.nmsIouThreshold,
         };
         commandList->SetComputeRoot32BitConstants(0, kRootConstantCount, &constants, 0);
-        commandList->SetComputeRootDescriptorTable(1, descriptorGpuHandle(kSrvRawOutput));
-        commandList->SetComputeRootDescriptorTable(2, descriptorGpuHandle(kUavCandidateBox));
+        commandList->SetComputeRootDescriptorTable(
+            1, descriptorGpuHandle(DescriptorTableLayout::kSrvRawOutput));
+        commandList->SetComputeRootDescriptorTable(
+            2, descriptorGpuHandle(DescriptorTableLayout::kUavCandidateBox));
 
         auto rawOutputState = currentState;
-        transitionTrackedResource(rawOutputResource, rawOutputState,
-                                  D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        transitionTrackedResource(candidateBox.get(), candidateBoxState,
-                                  D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        transitionTrackedResource(candidateScoreClass.get(), candidateScoreClassState,
-                                  D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        transitionTrackedResource(candidateCount.get(), candidateCountState,
-                                  D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        transitionTrackedResource(suppressed.get(), suppressedState,
-                                  D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        transitionTrackedResource(finalBox.get(), finalBoxState,
-                                  D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        transitionTrackedResource(finalScoreClass.get(), finalScoreClassState,
-                                  D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        transitionTrackedResource(finalCount.get(), finalCountState,
-                                  D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        transitionResources(
+            {
+                TransitionRequest{rawOutputResource, &rawOutputState},
+                TransitionRequest{candidateBox.get(), &candidateBoxState},
+                TransitionRequest{candidateScoreClass.get(), &candidateScoreClassState},
+                TransitionRequest{candidateCount.get(), &candidateCountState},
+                TransitionRequest{suppressed.get(), &suppressedState},
+                TransitionRequest{finalBox.get(), &finalBoxState},
+                TransitionRequest{finalScoreClass.get(), &finalScoreClassState},
+                TransitionRequest{finalCount.get(), &finalCountState},
+            },
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
         const auto clearCandidateCountResult =
-            clearCounterUav(candidateCount.get(), kUavCandidateCount);
+            clearCounterUav(candidateCount.get(), DescriptorTableLayout::kUavCandidateCount);
         if (!clearCandidateCountResult) {
             return std::unexpected(clearCandidateCountResult.error());
         }
 
         const UINT groupCount = (anchorCount + kThreadGroupSize - 1) / kThreadGroupSize;
-        commandList->Dispatch(groupCount, 1, 1);
-
-        addUavBarrier(candidateBox.get());
-        addUavBarrier(candidateScoreClass.get());
-        addUavBarrier(candidateCount.get());
-
-        commandList->SetPipelineState(nmsPipelineState.get());
-        commandList->Dispatch(groupCount, 1, 1);
-
-        addUavBarrier(suppressed.get());
+        runDecodeStage(groupCount);
+        runNmsStage(groupCount);
 
         commandList->SetPipelineState(compactPipelineState.get());
 
-        const auto clearFinalCountResult = clearCounterUav(finalCount.get(), kUavFinalCount);
+        const auto clearFinalCountResult =
+            clearCounterUav(finalCount.get(), DescriptorTableLayout::kUavFinalCount);
         if (!clearFinalCountResult) {
             return std::unexpected(clearFinalCountResult.error());
         }
 
-        commandList->Dispatch(groupCount, 1, 1);
+        runCompactStage(groupCount);
 
-        addUavBarrier(finalBox.get());
-        addUavBarrier(finalScoreClass.get());
-        addUavBarrier(finalCount.get());
+        transitionResources(
+            {
+                TransitionRequest{finalBox.get(), &finalBoxState},
+                TransitionRequest{finalScoreClass.get(), &finalScoreClassState},
+                TransitionRequest{finalCount.get(), &finalCountState},
+            },
+            D3D12_RESOURCE_STATE_COPY_SOURCE);
 
-        transitionTrackedResource(finalBox.get(), finalBoxState, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        transitionTrackedResource(finalScoreClass.get(), finalScoreClassState,
-                                  D3D12_RESOURCE_STATE_COPY_SOURCE);
-        transitionTrackedResource(finalCount.get(), finalCountState,
-                                  D3D12_RESOURCE_STATE_COPY_SOURCE);
+        copyReadbackResources();
 
-        commandList->CopyResource(readbackFinalBox.get(), finalBox.get());
-        commandList->CopyResource(readbackFinalScoreClass.get(), finalScoreClass.get());
-        commandList->CopyResource(readbackFinalCount.get(), finalCount.get());
-
-        transitionTrackedResource(finalBox.get(), finalBoxState, D3D12_RESOURCE_STATE_COMMON);
-        transitionTrackedResource(finalScoreClass.get(), finalScoreClassState,
-                                  D3D12_RESOURCE_STATE_COMMON);
-        transitionTrackedResource(finalCount.get(), finalCountState, D3D12_RESOURCE_STATE_COMMON);
-        transitionTrackedResource(rawOutputResource, rawOutputState, D3D12_RESOURCE_STATE_COMMON);
+        transitionResources(
+            {
+                TransitionRequest{finalBox.get(), &finalBoxState},
+                TransitionRequest{finalScoreClass.get(), &finalScoreClassState},
+                TransitionRequest{finalCount.get(), &finalCountState},
+                TransitionRequest{rawOutputResource, &rawOutputState},
+            },
+            D3D12_RESOURCE_STATE_COMMON);
 
         const HRESULT closeListHr = commandList->Close();
         NRX_DX_CHECK(closeListHr, "Postprocessor command list close failed",
@@ -363,6 +361,32 @@ class Postprocessor::Impl {
         }
 
         return {};
+    }
+
+    auto runDecodeStage(UINT groupCount) -> void {
+        commandList->Dispatch(groupCount, 1, 1);
+        addUavBarrier(candidateBox.get());
+        addUavBarrier(candidateScoreClass.get());
+        addUavBarrier(candidateCount.get());
+    }
+
+    auto runNmsStage(UINT groupCount) -> void {
+        commandList->SetPipelineState(nmsPipelineState.get());
+        commandList->Dispatch(groupCount, 1, 1);
+        addUavBarrier(suppressed.get());
+    }
+
+    auto runCompactStage(UINT groupCount) -> void {
+        commandList->Dispatch(groupCount, 1, 1);
+        addUavBarrier(finalBox.get());
+        addUavBarrier(finalScoreClass.get());
+        addUavBarrier(finalCount.get());
+    }
+
+    auto copyReadbackResources() -> void {
+        commandList->CopyResource(readbackFinalBox.get(), finalBox.get());
+        commandList->CopyResource(readbackFinalScoreClass.get(), finalScoreClass.get());
+        commandList->CopyResource(readbackFinalCount.get(), finalCount.get());
     }
 
     auto readbackFinalResults() -> std::expected<DetectionResults, InferenceError> {
@@ -423,6 +447,8 @@ class Postprocessor::Impl {
         return results;
     }
 
+    void setScoreThreshold(float value) { config.scoreThreshold = value; }
+
     void reset() {
         initialized = false;
         dxContext = nullptr;
@@ -473,7 +499,8 @@ class Postprocessor::Impl {
     }
 
   private:
-    auto validateInitInputs(nrx::gfx::DxContext* context, std::span<const int64_t> outputShape)
+    auto validateInitInputs(nrx::gfx::DxContext* context,
+                            std::span<const int64_t> outputShape) const
         -> std::expected<ID3D12Device*, InferenceError> {
         if (context == nullptr || outputShape.size() < 3) {
             return std::unexpected(InferenceError::InvalidArguments);
@@ -592,7 +619,7 @@ class Postprocessor::Impl {
     auto initializeDescriptorHeap(ID3D12Device* d12Device) -> std::expected<void, InferenceError> {
         D3D12_DESCRIPTOR_HEAP_DESC heapDescription{};
         heapDescription.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        heapDescription.NumDescriptors = kDescriptorCount;
+        heapDescription.NumDescriptors = DescriptorTableLayout::kDescriptorCount;
         heapDescription.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         const HRESULT createHeapHr =
             d12Device->CreateDescriptorHeap(&heapDescription, IID_PPV_ARGS(descriptorHeap.put()));
@@ -608,31 +635,43 @@ class Postprocessor::Impl {
         const auto candidateElementCount = static_cast<std::uint64_t>(anchorCount);
         const auto maxDetectionCount = static_cast<std::uint64_t>(config.maxDetections);
 
-        const auto bufferCreateFailed =
-            !createUavBuffer(d12Device, candidateBox, sizeof(float) * 4, candidateElementCount) ||
-            !createUavBuffer(d12Device, candidateScoreClass, sizeof(float) * 2,
-                             candidateElementCount) ||
-            !createUavBuffer(d12Device, candidateCount, sizeof(std::uint32_t), 1) ||
-            !createUavBuffer(d12Device, suppressed, sizeof(std::uint32_t), candidateElementCount) ||
-            !createUavBuffer(d12Device, finalBox, sizeof(float) * 4, maxDetectionCount) ||
-            !createUavBuffer(d12Device, finalScoreClass, sizeof(float) * 2, maxDetectionCount) ||
-            !createUavBuffer(d12Device, finalCount, sizeof(std::uint32_t), 1);
-        if (bufferCreateFailed) {
-            reset();
-            return std::unexpected(InferenceError::PostprocessFailed);
-        }
+        struct BufferSpec {
+            winrt::com_ptr<ID3D12Resource>* resource;
+            std::uint32_t stride;
+            std::uint64_t elementCount;
+            D3D12_RESOURCE_FLAGS flags;
+            D3D12_HEAP_TYPE heapType;
+        };
 
-        const auto readbackCreateFailed =
-            !createReadbackBuffer(d12Device, readbackFinalBox,
-                                  static_cast<std::uint64_t>(sizeof(float) * 4) *
-                                      maxDetectionCount) ||
-            !createReadbackBuffer(d12Device, readbackFinalScoreClass,
-                                  static_cast<std::uint64_t>(sizeof(float) * 2) *
-                                      maxDetectionCount) ||
-            !createReadbackBuffer(d12Device, readbackFinalCount, sizeof(std::uint32_t));
-        if (readbackCreateFailed) {
-            reset();
-            return std::unexpected(InferenceError::PostprocessFailed);
+        const std::array bufferSpecs{
+            BufferSpec{&candidateBox, sizeof(float) * 4, candidateElementCount,
+                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_HEAP_TYPE_DEFAULT},
+            BufferSpec{&candidateScoreClass, sizeof(float) * 2, candidateElementCount,
+                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_HEAP_TYPE_DEFAULT},
+            BufferSpec{&candidateCount, sizeof(std::uint32_t), 1,
+                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_HEAP_TYPE_DEFAULT},
+            BufferSpec{&suppressed, sizeof(std::uint32_t), candidateElementCount,
+                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_HEAP_TYPE_DEFAULT},
+            BufferSpec{&finalBox, sizeof(float) * 4, maxDetectionCount,
+                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_HEAP_TYPE_DEFAULT},
+            BufferSpec{&finalScoreClass, sizeof(float) * 2, maxDetectionCount,
+                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_HEAP_TYPE_DEFAULT},
+            BufferSpec{&finalCount, sizeof(std::uint32_t), 1,
+                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_HEAP_TYPE_DEFAULT},
+            BufferSpec{&readbackFinalBox, sizeof(float) * 4, maxDetectionCount,
+                       D3D12_RESOURCE_FLAG_NONE, D3D12_HEAP_TYPE_READBACK},
+            BufferSpec{&readbackFinalScoreClass, sizeof(float) * 2, maxDetectionCount,
+                       D3D12_RESOURCE_FLAG_NONE, D3D12_HEAP_TYPE_READBACK},
+            BufferSpec{&readbackFinalCount, sizeof(std::uint32_t), 1, D3D12_RESOURCE_FLAG_NONE,
+                       D3D12_HEAP_TYPE_READBACK},
+        };
+
+        for (const auto& spec : bufferSpecs) {
+            if (!createBuffer(d12Device, *spec.resource, spec.stride, spec.elementCount, spec.flags,
+                              spec.heapType)) {
+                reset();
+                return std::unexpected(InferenceError::PostprocessFailed);
+            }
         }
 
         createStaticDescriptors(d12Device);
@@ -667,46 +706,20 @@ class Postprocessor::Impl {
         return {};
     }
 
-    auto createUavBuffer(ID3D12Device* d12Device, winrt::com_ptr<ID3D12Resource>& resource,
-                         std::uint32_t stride, std::uint64_t elementCount) -> bool {
-        D3D12_HEAP_PROPERTIES heapProperties{};
-        heapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
+    auto createBuffer(ID3D12Device* d12Device, winrt::com_ptr<ID3D12Resource>& resource,
+                      std::uint32_t stride, std::uint64_t elementCount, D3D12_RESOURCE_FLAGS flags,
+                      D3D12_HEAP_TYPE heapType) -> bool {
+        const auto sizeBytes = static_cast<std::uint64_t>(stride) * elementCount;
+        const auto bufferResult =
+            nrx::utils::DxHelper::createBuffer(d12Device, sizeBytes, flags, heapType);
+        if (!bufferResult) {
+            NRX_ERROR("Postprocessor buffer creation failed: {}",
+                      nrx::utils::DxHelper::getErrorString(bufferResult.error()));
+            return false;
+        }
 
-        D3D12_RESOURCE_DESC description{};
-        description.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        description.Width = stride * elementCount;
-        description.Height = 1;
-        description.DepthOrArraySize = 1;
-        description.MipLevels = 1;
-        description.Format = DXGI_FORMAT_UNKNOWN;
-        description.SampleDesc.Count = 1;
-        description.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-        description.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-
-        return SUCCEEDED(d12Device->CreateCommittedResource(
-            &heapProperties, D3D12_HEAP_FLAG_NONE, &description, D3D12_RESOURCE_STATE_COMMON,
-            nullptr, IID_PPV_ARGS(resource.put())));
-    }
-
-    auto createReadbackBuffer(ID3D12Device* d12Device, winrt::com_ptr<ID3D12Resource>& resource,
-                              std::uint64_t sizeBytes) -> bool {
-        D3D12_HEAP_PROPERTIES heapProperties{};
-        heapProperties.Type = D3D12_HEAP_TYPE_READBACK;
-
-        D3D12_RESOURCE_DESC description{};
-        description.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        description.Width = sizeBytes;
-        description.Height = 1;
-        description.DepthOrArraySize = 1;
-        description.MipLevels = 1;
-        description.Format = DXGI_FORMAT_UNKNOWN;
-        description.SampleDesc.Count = 1;
-        description.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-        description.Flags = D3D12_RESOURCE_FLAG_NONE;
-
-        return SUCCEEDED(d12Device->CreateCommittedResource(
-            &heapProperties, D3D12_HEAP_FLAG_NONE, &description, D3D12_RESOURCE_STATE_COPY_DEST,
-            nullptr, IID_PPV_ARGS(resource.put())));
+        resource = bufferResult.value();
+        return true;
     }
 
     auto createStructuredSrv(ID3D12Device* d12Device, ID3D12Resource* resource,
@@ -744,68 +757,68 @@ class Postprocessor::Impl {
     auto createStaticDescriptors(ID3D12Device* d12Device) -> void {
         createStructuredSrv(d12Device, candidateBox.get(),
                             StructuredViewSpec{
-                                .descriptorIndex = kSrvCandidateBox,
+                                .descriptorIndex = DescriptorTableLayout::kSrvCandidateBox,
                                 .stride = sizeof(float) * 4,
                                 .numElements = anchorCount,
                             });
         createStructuredSrv(d12Device, candidateScoreClass.get(),
                             StructuredViewSpec{
-                                .descriptorIndex = kSrvCandidateScoreClass,
+                                .descriptorIndex = DescriptorTableLayout::kSrvCandidateScoreClass,
                                 .stride = sizeof(float) * 2,
                                 .numElements = anchorCount,
                             });
         createStructuredSrv(d12Device, candidateCount.get(),
                             StructuredViewSpec{
-                                .descriptorIndex = kSrvCandidateCount,
+                                .descriptorIndex = DescriptorTableLayout::kSrvCandidateCount,
                                 .stride = sizeof(std::uint32_t),
                                 .numElements = 1,
                             });
         createStructuredSrv(d12Device, suppressed.get(),
                             StructuredViewSpec{
-                                .descriptorIndex = kSrvSuppressed,
+                                .descriptorIndex = DescriptorTableLayout::kSrvSuppressed,
                                 .stride = sizeof(std::uint32_t),
                                 .numElements = anchorCount,
                             });
 
         createStructuredUav(d12Device, candidateBox.get(),
                             StructuredViewSpec{
-                                .descriptorIndex = kUavCandidateBox,
+                                .descriptorIndex = DescriptorTableLayout::kUavCandidateBox,
                                 .stride = sizeof(float) * 4,
                                 .numElements = anchorCount,
                             });
         createStructuredUav(d12Device, candidateScoreClass.get(),
                             StructuredViewSpec{
-                                .descriptorIndex = kUavCandidateScoreClass,
+                                .descriptorIndex = DescriptorTableLayout::kUavCandidateScoreClass,
                                 .stride = sizeof(float) * 2,
                                 .numElements = anchorCount,
                             });
         createStructuredUav(d12Device, candidateCount.get(),
                             StructuredViewSpec{
-                                .descriptorIndex = kUavCandidateCount,
+                                .descriptorIndex = DescriptorTableLayout::kUavCandidateCount,
                                 .stride = sizeof(std::uint32_t),
                                 .numElements = 1,
                             });
         createStructuredUav(d12Device, suppressed.get(),
                             StructuredViewSpec{
-                                .descriptorIndex = kUavSuppressed,
+                                .descriptorIndex = DescriptorTableLayout::kUavSuppressed,
                                 .stride = sizeof(std::uint32_t),
                                 .numElements = anchorCount,
                             });
         createStructuredUav(d12Device, finalBox.get(),
                             StructuredViewSpec{
-                                .descriptorIndex = kUavFinalBox,
+                                .descriptorIndex = DescriptorTableLayout::kUavFinalBox,
                                 .stride = sizeof(float) * 4,
                                 .numElements = config.maxDetections,
                             });
         createStructuredUav(d12Device, finalScoreClass.get(),
                             StructuredViewSpec{
-                                .descriptorIndex = kUavFinalScoreClass,
+                                .descriptorIndex = DescriptorTableLayout::kUavFinalScoreClass,
                                 .stride = sizeof(float) * 2,
                                 .numElements = config.maxDetections,
                             });
         createStructuredUav(d12Device, finalCount.get(),
                             StructuredViewSpec{
-                                .descriptorIndex = kUavFinalCount,
+                                .descriptorIndex = DescriptorTableLayout::kUavFinalCount,
                                 .stride = sizeof(std::uint32_t),
                                 .numElements = 1,
                             });
@@ -837,37 +850,56 @@ class Postprocessor::Impl {
         return {};
     }
 
-    auto transitionTrackedResource(ID3D12Resource* resource, D3D12_RESOURCE_STATES& trackedState,
-                                   D3D12_RESOURCE_STATES targetState) -> void {
-        // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
-        if (trackedState == targetState) {
+    struct TransitionRequest {
+        ID3D12Resource* resource;
+        D3D12_RESOURCE_STATES* trackedState;
+    };
+
+    auto transitionResources(std::initializer_list<TransitionRequest> requests,
+                             D3D12_RESOURCE_STATES targetState) -> void {
+        if (commandList == nullptr) {
             return;
         }
 
-        D3D12_RESOURCE_BARRIER transitionBarrier{};
-        transitionBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        transitionBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-        transitionBarrier.Transition.pResource = resource;
-        transitionBarrier.Transition.StateBefore = trackedState;
-        transitionBarrier.Transition.StateAfter = targetState;
-        transitionBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        commandList->ResourceBarrier(1, &transitionBarrier);
-        trackedState = targetState;
+        std::vector<D3D12_RESOURCE_BARRIER> barriers;
+        barriers.reserve(requests.size());
+
+        // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
+        for (const auto& request : requests) {
+            if (request.resource == nullptr || request.trackedState == nullptr ||
+                *request.trackedState == targetState) {
+                continue;
+            }
+
+            D3D12_RESOURCE_BARRIER transitionBarrier{};
+            transitionBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            transitionBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+            transitionBarrier.Transition.pResource = request.resource;
+            transitionBarrier.Transition.StateBefore = *request.trackedState;
+            transitionBarrier.Transition.StateAfter = targetState;
+            transitionBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            barriers.push_back(transitionBarrier);
+            *request.trackedState = targetState;
+        }
+
+        if (!barriers.empty()) {
+            commandList->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+        }
         // NOLINTEND(cppcoreguidelines-pro-type-union-access)
     }
 
     [[nodiscard]] auto descriptorCpuHandle(UINT descriptorIndex) const
         -> D3D12_CPU_DESCRIPTOR_HANDLE {
-        D3D12_CPU_DESCRIPTOR_HANDLE handle = descriptorHeap->GetCPUDescriptorHandleForHeapStart();
-        handle.ptr += static_cast<SIZE_T>(descriptorIndex) * descriptorSize;
-        return handle;
+        return CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptorHeap->GetCPUDescriptorHandleForHeapStart(),
+                                             static_cast<INT>(descriptorIndex),
+                                             static_cast<INT>(descriptorSize));
     }
 
     [[nodiscard]] auto descriptorGpuHandle(UINT descriptorIndex) const
         -> D3D12_GPU_DESCRIPTOR_HANDLE {
-        D3D12_GPU_DESCRIPTOR_HANDLE handle = descriptorHeap->GetGPUDescriptorHandleForHeapStart();
-        handle.ptr += static_cast<UINT64>(descriptorIndex) * descriptorSize;
-        return handle;
+        return CD3DX12_GPU_DESCRIPTOR_HANDLE(descriptorHeap->GetGPUDescriptorHandleForHeapStart(),
+                                             static_cast<INT>(descriptorIndex),
+                                             static_cast<INT>(descriptorSize));
     }
 
     Config config{};
@@ -937,6 +969,8 @@ auto Postprocessor::dispatch(ID3D12Resource* rawOutputResource, D3D12_RESOURCE_S
 auto Postprocessor::readbackFinalResults() -> std::expected<DetectionResults, InferenceError> {
     return impl->readbackFinalResults();
 }
+
+void Postprocessor::setScoreThreshold(float value) { impl->setScoreThreshold(value); }
 
 void Postprocessor::reset() { impl->reset(); }
 

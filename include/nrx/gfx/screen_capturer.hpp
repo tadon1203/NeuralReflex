@@ -18,6 +18,7 @@ enum class CaptureError : std::uint8_t {
     MonitorEnumerationFailed,
     NoMonitors,
     NoPrimaryMonitor,
+    DisplayIndexOutOfRange,
     DxgiDeviceQueryFailed,
     WinRtDeviceCreationFailed,
     CaptureItemCreationFailed,
@@ -44,7 +45,8 @@ class ScreenCapturer {
     ScreenCapturer(ScreenCapturer&&) = delete;
     auto operator=(ScreenCapturer&&) -> ScreenCapturer& = delete;
 
-    auto init() -> std::expected<void, CaptureError>;
+    auto init(std::int32_t displayIndex) -> std::expected<void, CaptureError>;
+    auto reconfigure(std::int32_t displayIndex) -> bool;
     auto start() -> std::expected<void, CaptureError>;
     void stop();
 

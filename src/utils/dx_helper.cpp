@@ -64,4 +64,41 @@ auto DxHelper::getErrorString(std::int32_t hr) -> std::string {
     return hresultHex(hr) + " (" + message + ")";
 }
 
+auto DxHelper::createBuffer(ID3D12Device* d12Device, std::uint64_t sizeBytes,
+                            D3D12_RESOURCE_FLAGS flags, D3D12_HEAP_TYPE heapType)
+    -> std::expected<winrt::com_ptr<ID3D12Resource>, std::int32_t> {
+    if (d12Device == nullptr || sizeBytes == 0) {
+        return std::unexpected(E_INVALIDARG);
+    }
+
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
+    D3D12_HEAP_PROPERTIES heapProperties{};
+    heapProperties.Type = heapType;
+
+    D3D12_RESOURCE_DESC description{};
+    description.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    description.Width = sizeBytes;
+    description.Height = 1;
+    description.DepthOrArraySize = 1;
+    description.MipLevels = 1;
+    description.Format = DXGI_FORMAT_UNKNOWN;
+    description.SampleDesc.Count = 1;
+    description.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    description.Flags = flags;
+    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+
+    const auto initialState = (heapType == D3D12_HEAP_TYPE_READBACK) ? D3D12_RESOURCE_STATE_COPY_DEST
+                                                                      : D3D12_RESOURCE_STATE_COMMON;
+
+    winrt::com_ptr<ID3D12Resource> resource;
+    const HRESULT createHr =
+        d12Device->CreateCommittedResource(&heapProperties, D3D12_HEAP_FLAG_NONE, &description,
+                                           initialState, nullptr, IID_PPV_ARGS(resource.put()));
+    if (FAILED(createHr)) {
+        return std::unexpected(static_cast<std::int32_t>(createHr));
+    }
+
+    return resource;
+}
+
 } // namespace nrx::utils

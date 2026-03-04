@@ -129,25 +129,16 @@ class OrtSessionManager::Impl {
                 return std::unexpected(InferenceError::SessionInitFailed);
             }
 
-            D3D12_HEAP_PROPERTIES outputHeapProperties{};
-            outputHeapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
-
-            D3D12_RESOURCE_DESC outputDescription{};
-            outputDescription.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-            outputDescription.Width = outputBytes;
-            outputDescription.Height = 1;
-            outputDescription.DepthOrArraySize = 1;
-            outputDescription.MipLevels = 1;
-            outputDescription.Format = DXGI_FORMAT_UNKNOWN;
-            outputDescription.SampleDesc.Count = 1;
-            outputDescription.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-            outputDescription.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-
-            const HRESULT createOutputHr = d12Device->CreateCommittedResource(
-                &outputHeapProperties, D3D12_HEAP_FLAG_NONE, &outputDescription,
-                D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(outputResource.put()));
-            NRX_DX_CHECK(createOutputHr, "OrtSessionManager output resource creation failed",
-                         InferenceError::SessionInitFailed);
+            const auto outputBufferResult = nrx::utils::DxHelper::createBuffer(
+                d12Device, outputBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                D3D12_HEAP_TYPE_DEFAULT);
+            if (!outputBufferResult) {
+                NRX_ERROR("OrtSessionManager output resource creation failed: {}",
+                          nrx::utils::DxHelper::getErrorString(outputBufferResult.error()));
+                reset();
+                return std::unexpected(InferenceError::SessionInitFailed);
+            }
+            outputResource = outputBufferResult.value();
 
             OrtStatus* createOutputAllocationStatus = dmlApi->CreateGPUAllocationFromD3DResource(
                 outputResource.get(), &outputDmlAllocation);

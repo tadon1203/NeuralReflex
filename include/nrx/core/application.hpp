@@ -1,10 +1,14 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <shared_mutex>
 #include <stop_token>
 #include <thread>
+
+#include "nrx/core/config.hpp"
+#include "nrx/core/config_manager.hpp"
 
 namespace nrx::gfx {
 class DxContext;
@@ -31,11 +35,23 @@ class Application {
     void shutdown();
 
   private:
+    enum class FrameResult : std::uint8_t {
+        Success,
+        NoFrame,
+        Error,
+        DeviceLost,
+    };
+
     void inferenceLoop(const std::stop_token& stopToken);
+    auto processSingleFrame() -> FrameResult;
+    void handleConfigUpdate();
     void overlayLoop();
+    void applyConfig(const AppConfig& config);
     void reinitializeEnginesAfterDeviceReset();
 
     std::atomic_bool running{false};
+    AppConfig activeConfig{defaultAppConfig()};
+    std::unique_ptr<ConfigManager> configManager;
     std::unique_ptr<nrx::gfx::DxContext> dxContext;
     std::unique_ptr<nrx::gfx::GfxBridge> gfxBridge;
     std::unique_ptr<nrx::gfx::ScreenCapturer> screenCapturer;

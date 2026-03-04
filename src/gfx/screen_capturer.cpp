@@ -37,6 +37,8 @@ auto captureErrorToString(CaptureError error) -> std::string_view {
         return "NoMonitors";
     case CaptureError::NoPrimaryMonitor:
         return "NoPrimaryMonitor";
+    case CaptureError::DisplayIndexOutOfRange:
+        return "DisplayIndexOutOfRange";
     case CaptureError::DxgiDeviceQueryFailed:
         return "DxgiDeviceQueryFailed";
     case CaptureError::WinRtDeviceCreationFailed:
@@ -70,7 +72,6 @@ namespace {
 
 struct MonitorInfo {
     HMONITOR handle{nullptr};
-    bool primary{false};
 };
 
 auto CALLBACK enumMonitorsProc(HMONITOR monitor, HDC deviceContext, LPRECT clippingRect,
@@ -84,14 +85,7 @@ auto CALLBACK enumMonitorsProc(HMONITOR monitor, HDC deviceContext, LPRECT clipp
         return FALSE;
     }
 
-    MONITORINFOEXW monitorInfo{};
-    monitorInfo.cbSize = sizeof(monitorInfo);
-    if (GetMonitorInfoW(monitor, &monitorInfo) == 0) {
-        return TRUE;
-    }
-
-    monitors->push_back(MonitorInfo{
-        .handle = monitor, .primary = (monitorInfo.dwFlags & MONITORINFOF_PRIMARY) != 0});
+    monitors->push_back(MonitorInfo{.handle = monitor});
     return TRUE;
 }
 
@@ -127,7 +121,7 @@ class ScreenCapturer::Impl {
     Impl(Impl&&) = delete;
     auto operator=(Impl&&) -> Impl& = delete;
 
-    auto init() -> std::expected<void, CaptureError> {
+    auto init(std::int32_t displayIndex) -> std::expected<void, CaptureError> {
         stop();
         resetInitState();
 
@@ -165,13 +159,14 @@ class ScreenCapturer::Impl {
         }
 
         const auto& monitors = monitorsResult.value();
-        const auto primaryIt =
-            std::ranges::find_if(monitors, [](const MonitorInfo& info) { return info.primary; });
-        if (primaryIt == monitors.end()) {
-            return std::unexpected(CaptureError::NoPrimaryMonitor);
+        if (displayIndex < 0 || static_cast<std::size_t>(displayIndex) >= monitors.size()) {
+            NRX_WARN("Display index {} is out of range. Available displays: {}.", displayIndex,
+                     monitors.size());
+            return std::unexpected(CaptureError::DisplayIndexOutOfRange);
         }
 
-        selectedMonitor = primaryIt->handle;
+        selectedMonitor = monitors[static_cast<std::size_t>(displayIndex)].handle;
+        selectedDisplayIndex = displayIndex;
 
         const auto captureInterop =
             winrt::get_activation_factory<winrt::Windows::Graphics::Capture::GraphicsCaptureItem,
@@ -182,14 +177,69 @@ class ScreenCapturer::Impl {
             selectedMonitor,
             winrt::guid_of<winrt::Windows::Graphics::Capture::GraphicsCaptureItem>(),
             winrt::put_abi(item));
-        NRX_DX_CHECK(itemHr, "Failed to create GraphicsCaptureItem for primary monitor",
+        NRX_DX_CHECK(itemHr, "Failed to create GraphicsCaptureItem for selected monitor",
                      CaptureError::CaptureItemCreationFailed);
 
         captureItem = item;
         initialized = true;
 
-        NRX_INFO("ScreenCapturer initialized for primary display.");
+        NRX_INFO("ScreenCapturer initialized for display index {}.", selectedDisplayIndex);
         return {};
+    }
+
+    auto reconfigure(std::int32_t displayIndex) -> bool {
+        const auto previousDisplayIndex = selectedDisplayIndex;
+        const bool wasCapturing = capturing;
+
+        if (const auto initResult = init(displayIndex); !initResult) {
+            NRX_WARN("ScreenCapturer reconfigure failed for display index {}: {}", displayIndex,
+                     captureErrorToString(initResult.error()));
+            if (previousDisplayIndex >= 0) {
+                if (const auto restoreInitResult = init(previousDisplayIndex); !restoreInitResult) {
+                    NRX_CRITICAL("ScreenCapturer rollback init failed for display index {}: {}",
+                                 previousDisplayIndex,
+                                 captureErrorToString(restoreInitResult.error()));
+                    return false;
+                }
+                if (wasCapturing) {
+                    if (const auto restoreStartResult = start(); !restoreStartResult) {
+                        NRX_CRITICAL(
+                            "ScreenCapturer rollback start failed for display index {}: {}",
+                            previousDisplayIndex,
+                            captureErrorToString(restoreStartResult.error()));
+                        return false;
+                    }
+                }
+            }
+            return false;
+        }
+
+        if (wasCapturing) {
+            if (const auto startResult = start(); !startResult) {
+                NRX_WARN("ScreenCapturer reconfigure start failed for display index {}: {}",
+                         displayIndex, captureErrorToString(startResult.error()));
+
+                if (previousDisplayIndex >= 0) {
+                    if (const auto restoreInitResult = init(previousDisplayIndex);
+                        !restoreInitResult) {
+                        NRX_CRITICAL("ScreenCapturer rollback init failed for display index {}: {}",
+                                     previousDisplayIndex,
+                                     captureErrorToString(restoreInitResult.error()));
+                        return false;
+                    }
+                    if (const auto restoreStartResult = start(); !restoreStartResult) {
+                        NRX_CRITICAL(
+                            "ScreenCapturer rollback start failed for display index {}: {}",
+                            previousDisplayIndex,
+                            captureErrorToString(restoreStartResult.error()));
+                        return false;
+                    }
+                }
+                return false;
+            }
+        }
+
+        return true;
     }
 
     auto start() -> std::expected<void, CaptureError> {
@@ -288,6 +338,7 @@ class ScreenCapturer::Impl {
     void resetInitState() {
         initialized = false;
         selectedMonitor = nullptr;
+        selectedDisplayIndex = -1;
         captureItem = nullptr;
         d3dDevice = nullptr;
         d11Device = nullptr;
@@ -299,6 +350,7 @@ class ScreenCapturer::Impl {
     bool capturing{false};
 
     HMONITOR selectedMonitor{nullptr};
+    std::int32_t selectedDisplayIndex{-1};
 
     winrt::com_ptr<ID3D11Device5> d11Device;
     winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice d3dDevice{nullptr};
@@ -314,7 +366,13 @@ ScreenCapturer::ScreenCapturer(DxContext* ctx) : impl(std::make_unique<Impl>(ctx
 
 ScreenCapturer::~ScreenCapturer() = default;
 
-auto ScreenCapturer::init() -> std::expected<void, CaptureError> { return impl->init(); }
+auto ScreenCapturer::init(std::int32_t displayIndex) -> std::expected<void, CaptureError> {
+    return impl->init(displayIndex);
+}
+
+auto ScreenCapturer::reconfigure(std::int32_t displayIndex) -> bool {
+    return impl->reconfigure(displayIndex);
+}
 
 auto ScreenCapturer::start() -> std::expected<void, CaptureError> { return impl->start(); }
 

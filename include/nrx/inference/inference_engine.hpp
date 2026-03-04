@@ -4,17 +4,10 @@
 #include <filesystem>
 #include <memory>
 
+#include "nrx/gfx/dx_types.hpp"
 #include "nrx/inference/types.hpp"
 
 struct ID3D12Resource;
-#if defined(__clang__)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wmicrosoft-enum-forward-reference"
-#endif
-using D3D12_RESOURCE_STATES = enum D3D12_RESOURCE_STATES; // NOLINT(readability-identifier-naming)
-#if defined(__clang__)
-#pragma clang diagnostic pop
-#endif
 
 namespace nrx::gfx {
 class DxContext;
@@ -38,6 +31,9 @@ class InferenceEngine {
     auto execute(ID3D12Resource* inputTexture, D3D12_RESOURCE_STATES currentState)
         -> std::expected<DetectionResults, InferenceError>;
 
+    auto update(const std::filesystem::path& modelPath, float confidenceThreshold) -> bool;
+    auto reinitialize() -> bool;
+    void setScoreThreshold(float value);
     void reset();
 
   private:

@@ -6,12 +6,14 @@
 #include <expected>
 
 #include <Windows.h>
-#include <d3d12.h>
+#include <directx/d3d12.h>
 #include <d3dcompiler.h>
+#include <directx/d3dx12.h>
 #include <winrt/base.h>
 
 #include "generated/inference/preprocess_cs_embedded.hpp"
 #include "nrx/gfx/dx_context.hpp"
+#include "nrx/inference/resource_transition.hpp"
 #include "nrx/inference/types.hpp"
 #include "nrx/utils/dx_helper.hpp"
 #include "nrx/utils/logger.hpp"
@@ -97,10 +99,8 @@ class ImagePreprocessor::Impl {
         return {};
     }
 
-    auto preprocess(ID3D12Resource* inputTexture,
-                    D3D12_RESOURCE_STATES currentState,
-                    D3D12_RESOURCE_STATES nextState)
-        -> std::expected<ID3D12Resource*, InferenceError> {
+    auto preprocess(ID3D12Resource* inputTexture, const ResourceTransition& transition)
+        -> std::expected<PreprocessOutput, InferenceError> {
         if (!initialized || dxContext == nullptr || preprocessedTensor == nullptr) {
             return std::unexpected(InferenceError::NotInitialized);
         }
@@ -111,7 +111,7 @@ class ImagePreprocessor::Impl {
             return std::unexpected(InferenceError::InvalidArguments);
         }
 
-        const auto bindResult = bindInputAndConstants(inputTexture, currentState, nextState);
+        const auto bindResult = bindInputAndConstants(inputTexture, transition);
         if (!bindResult) {
             return std::unexpected(bindResult.error());
         }
@@ -120,7 +120,10 @@ class ImagePreprocessor::Impl {
             return std::unexpected(dispatchResult.error());
         }
 
-        return preprocessedTensor.get();
+        return PreprocessOutput{
+            .resource = preprocessedTensor.get(),
+            .currentState = preprocessedTensorState,
+        };
     }
 
     void reset() {
@@ -139,6 +142,8 @@ class ImagePreprocessor::Impl {
         descriptorSize = 0;
         completionFence = nullptr;
         preprocessedTensorState = D3D12_RESOURCE_STATE_COMMON;
+        cachedInputTexture = nullptr;
+        cachedSrvFormat = DXGI_FORMAT_UNKNOWN;
         shaderBlob = nullptr;
         preprocessedTensor = nullptr;
     }
@@ -200,25 +205,16 @@ class ImagePreprocessor::Impl {
         const auto tensorBytes = static_cast<std::uint64_t>(kInputResolution.width) *
                                  kInputResolution.height * kInputChannels * sizeof(float);
 
-        D3D12_HEAP_PROPERTIES heapProperties{};
-        heapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
+        const auto bufferResult = nrx::utils::DxHelper::createBuffer(
+            d12Device, tensorBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+            D3D12_HEAP_TYPE_DEFAULT);
+        if (!bufferResult) {
+            NRX_ERROR("ImagePreprocessor failed to create preprocessed tensor buffer: {}",
+                      nrx::utils::DxHelper::getErrorString(bufferResult.error()));
+            return std::unexpected(InferenceError::PreprocessFailed);
+        }
 
-        D3D12_RESOURCE_DESC desc{};
-        desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        desc.Width = tensorBytes;
-        desc.Height = 1;
-        desc.DepthOrArraySize = 1;
-        desc.MipLevels = 1;
-        desc.Format = DXGI_FORMAT_UNKNOWN;
-        desc.SampleDesc.Count = 1;
-        desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-        desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-
-        const HRESULT createHr = d12Device->CreateCommittedResource(
-            &heapProperties, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr,
-            IID_PPV_ARGS(preprocessedTensor.put()));
-        NRX_DX_CHECK(createHr, "ImagePreprocessor failed to create preprocessed tensor buffer",
-                     InferenceError::PreprocessFailed);
+        preprocessedTensor = bufferResult.value();
         return {};
     }
 
@@ -407,8 +403,7 @@ class ImagePreprocessor::Impl {
     }
 
     auto bindInputAndConstants(ID3D12Resource* inputTexture,
-                               D3D12_RESOURCE_STATES currentState,
-                               D3D12_RESOURCE_STATES nextState)
+                               const ResourceTransition& resourceTransition)
         -> std::expected<void, InferenceError> {
         // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
         auto* d12Device = dxContext->getD12Device();
@@ -432,17 +427,23 @@ class ImagePreprocessor::Impl {
             return std::unexpected(InferenceError::PreprocessFailed);
         }
 
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDescription{};
-        srvDescription.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDescription.Format = srvFormat;
-        srvDescription.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srvDescription.Texture2D.MostDetailedMip =
-            0;
-        srvDescription.Texture2D.MipLevels = 1;
-        srvDescription.Texture2D.PlaneSlice = 0;
-        srvDescription.Texture2D.ResourceMinLODClamp =
-            0.0F;
-        d12Device->CreateShaderResourceView(inputTexture, &srvDescription, descriptorCpuHandle(0));
+        const bool shouldRefreshSrv =
+            (cachedInputTexture != inputTexture) || (cachedSrvFormat != srvFormat);
+        if (shouldRefreshSrv) {
+            D3D12_SHADER_RESOURCE_VIEW_DESC srvDescription{};
+            srvDescription.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srvDescription.Format = srvFormat;
+            srvDescription.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srvDescription.Texture2D.MostDetailedMip =
+                0;
+            srvDescription.Texture2D.MipLevels = 1;
+            srvDescription.Texture2D.PlaneSlice = 0;
+            srvDescription.Texture2D.ResourceMinLODClamp =
+                0.0F;
+            d12Device->CreateShaderResourceView(inputTexture, &srvDescription, descriptorCpuHandle(0));
+            cachedInputTexture = inputTexture;
+            cachedSrvFormat = srvFormat;
+        }
 
         const auto srcWidth = static_cast<float>(inputDescription.Width);
         const auto srcHeight = static_cast<float>(inputDescription.Height);
@@ -480,7 +481,7 @@ class ImagePreprocessor::Impl {
         commandList->SetComputeRootDescriptorTable(1, descriptorGpuHandle(0));
         commandList->SetComputeRootDescriptorTable(2, descriptorGpuHandle(1));
 
-        auto inputTrackedState = currentState;
+        auto inputTrackedState = resourceTransition.fromState;
 
         transitionTrackedResource(inputTexture, inputTrackedState,
                                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -501,7 +502,7 @@ class ImagePreprocessor::Impl {
 
         transitionTrackedResource(preprocessedTensor.get(), preprocessedTensorState,
                                   D3D12_RESOURCE_STATE_COMMON);
-        transitionTrackedResource(inputTexture, inputTrackedState, nextState);
+        transitionTrackedResource(inputTexture, inputTrackedState, resourceTransition.toState);
 
         const HRESULT closeListHr = commandList->Close();
         NRX_DX_CHECK(closeListHr, "ImagePreprocessor failed to close command list",
@@ -552,15 +553,13 @@ class ImagePreprocessor::Impl {
     }
 
     [[nodiscard]] auto descriptorCpuHandle(UINT index) const -> D3D12_CPU_DESCRIPTOR_HANDLE {
-        D3D12_CPU_DESCRIPTOR_HANDLE handle = descriptorHeap->GetCPUDescriptorHandleForHeapStart();
-        handle.ptr += static_cast<SIZE_T>(index) * descriptorSize;
-        return handle;
+        return CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptorHeap->GetCPUDescriptorHandleForHeapStart(),
+                                             static_cast<INT>(index), static_cast<INT>(descriptorSize));
     }
 
     [[nodiscard]] auto descriptorGpuHandle(UINT index) const -> D3D12_GPU_DESCRIPTOR_HANDLE {
-        D3D12_GPU_DESCRIPTOR_HANDLE handle = descriptorHeap->GetGPUDescriptorHandleForHeapStart();
-        handle.ptr += static_cast<UINT64>(index) * descriptorSize;
-        return handle;
+        return CD3DX12_GPU_DESCRIPTOR_HANDLE(descriptorHeap->GetGPUDescriptorHandleForHeapStart(),
+                                             static_cast<INT>(index), static_cast<INT>(descriptorSize));
     }
 
     bool initialized{false};
@@ -575,6 +574,8 @@ class ImagePreprocessor::Impl {
     HANDLE fenceEvent{nullptr};
     std::uint64_t fenceValue{0};
     D3D12_RESOURCE_STATES preprocessedTensorState{D3D12_RESOURCE_STATE_COMMON};
+    ID3D12Resource* cachedInputTexture{nullptr};
+    DXGI_FORMAT cachedSrvFormat{DXGI_FORMAT_UNKNOWN};
     winrt::com_ptr<ID3DBlob> shaderBlob;
     winrt::com_ptr<ID3D12Resource> preprocessedTensor;
 };
@@ -588,11 +589,9 @@ auto ImagePreprocessor::init(nrx::gfx::DxContext* dxContext)
     return impl->init(dxContext);
 }
 
-auto ImagePreprocessor::preprocess(ID3D12Resource* inputTexture,
-                                   D3D12_RESOURCE_STATES currentState,
-                                   D3D12_RESOURCE_STATES nextState)
-    -> std::expected<ID3D12Resource*, InferenceError> {
-    return impl->preprocess(inputTexture, currentState, nextState);
+auto ImagePreprocessor::preprocess(ID3D12Resource* inputTexture, const ResourceTransition& transition)
+    -> std::expected<PreprocessOutput, InferenceError> {
+    return impl->preprocess(inputTexture, transition);
 }
 
 void ImagePreprocessor::reset() { impl->reset(); }

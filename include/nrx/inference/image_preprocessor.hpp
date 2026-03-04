@@ -4,15 +4,9 @@
 #include <expected>
 #include <memory>
 
+#include "nrx/gfx/dx_types.hpp"
+
 struct ID3D12Resource;
-#if defined(__clang__)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wmicrosoft-enum-forward-reference"
-#endif
-using D3D12_RESOURCE_STATES = enum D3D12_RESOURCE_STATES; // NOLINT(readability-identifier-naming)
-#if defined(__clang__)
-#pragma clang diagnostic pop
-#endif
 
 namespace nrx::gfx {
 class DxContext;
@@ -21,6 +15,13 @@ class DxContext;
 namespace nrx::inference {
 
 enum class InferenceError : std::uint8_t;
+struct ResourceTransition;
+
+struct PreprocessOutput {
+    ID3D12Resource* resource{nullptr};
+    D3D12_RESOURCE_STATES currentState =
+        static_cast<D3D12_RESOURCE_STATES>(0); // NOLINT(readability-identifier-naming)
+};
 
 class ImagePreprocessor {
   public:
@@ -33,10 +34,8 @@ class ImagePreprocessor {
     auto operator=(ImagePreprocessor&&) -> ImagePreprocessor& = delete;
 
     auto init(nrx::gfx::DxContext* dxContext) -> std::expected<void, InferenceError>;
-    [[nodiscard]] auto preprocess(ID3D12Resource* inputTexture,
-                                  D3D12_RESOURCE_STATES currentState,
-                                  D3D12_RESOURCE_STATES nextState)
-        -> std::expected<ID3D12Resource*, InferenceError>;
+    [[nodiscard]] auto preprocess(ID3D12Resource* inputTexture, const ResourceTransition& transition)
+        -> std::expected<PreprocessOutput, InferenceError>;
     void reset();
 
   private:

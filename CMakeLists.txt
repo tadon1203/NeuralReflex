@@ -14,6 +14,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(spdlog)
 
+set(DIRECTX_HEADERS_BUILD_TESTS OFF CACHE BOOL "Disable DirectX-Headers tests" FORCE)
+FetchContent_Declare(
+    directx_headers
+    GIT_REPOSITORY https://github.com/microsoft/DirectX-Headers.git
+    GIT_TAG        v1.619.0
+)
+FetchContent_MakeAvailable(directx_headers)
+
 add_compile_definitions(WIN32_LEAN_AND_MEAN NOMINMAX)
 
 set(PREPROCESS_SHADER_SOURCE
@@ -99,6 +107,7 @@ add_custom_target(generate_embedded_shaders
 add_executable(${PROJECT_NAME}
     src/main.cpp
     src/core/application.cpp
+    src/core/config_manager.cpp
     src/core/platform_win.cpp
     src/utils/logger.cpp
     src/utils/dx_helper.cpp
@@ -115,6 +124,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime/1.25.0/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime/1.25.0/include/onnxruntime/core/session
 )
@@ -138,6 +148,7 @@ set(ONNXRUNTIME_LIB_DIR "${ONNXRUNTIME_ROOT}/lib/win-x64/RelWithDebInfo")
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
     spdlog::spdlog
+    Microsoft::DirectX-Headers
     d3d11
     d3d12
     d3dcompiler
